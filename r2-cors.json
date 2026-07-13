@@ -1,0 +1,20 @@
+[
+  {
+    "AllowedOrigins": [
+      "https://citera.example.com",
+      "chrome-extension://replace-with-extension-id"
+    ],
+    "AllowedMethods": ["GET", "HEAD", "PUT"],
+    "AllowedHeaders": [
+      "content-type",
+      "content-length",
+      "range",
+      "if-none-match",
+      "x-amz-checksum-sha256",
+      "x-amz-content-sha256",
+      "x-amz-date"
+    ],
+    "ExposeHeaders": ["etag", "content-length", "content-range", "accept-ranges"],
+    "MaxAgeSeconds": 300
+  }
+]

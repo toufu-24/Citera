@@ -1,0 +1,51 @@
+.citera-button {
+  min-height: 2.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0 0.95rem;
+  border: 1px solid #dcd7cd;
+  border-radius: 0.5rem;
+  font:
+    700 0.8125rem/1 system-ui,
+    sans-serif;
+  cursor: pointer;
+}
+.citera-button-primary {
+  background: #213a2d;
+  border-color: #213a2d;
+  color: white;
+}
+.citera-button-secondary {
+  background: #fffdf9;
+  color: #17211b;
+}
+.citera-button-danger {
+  background: #fff8f6;
+  border-color: #e7c3be;
+  color: #aa403b;
+}
+.citera-status {
+  display: inline-flex;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+}
+.citera-status-neutral {
+  background: #e5e4df;
+  color: #5e655f;
+}
+.citera-status-info {
+  background: #e0e9ef;
+  color: #365d73;
+}
+.citera-status-success {
+  background: #dfe9e0;
+  color: #315741;
+}
+.citera-status-warning {
+  background: #f5eadb;
+  color: #694c31;
+}

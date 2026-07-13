@@ -1,0 +1,23 @@
+{
+  "name": "@citera/api-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --root ../.. packages/api-client/src"
+  },
+  "dependencies": {
+    "@citera/domain": "workspace:*",
+    "zod": "^4.0.14"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.0"
+  }
+}

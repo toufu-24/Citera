@@ -1,0 +1,99 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "citera-jobs",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-13",
+  "compatibility_flags": ["nodejs_compat"],
+  "minify": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1,
+  },
+  "triggers": {
+    "crons": ["17 * * * *"],
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "citera-db",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "../../migrations",
+    },
+  ],
+  "r2_buckets": [
+    {
+      "binding": "FILES",
+      "bucket_name": "citera-files",
+    },
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "JOBS",
+        "queue": "citera-jobs",
+      },
+    ],
+    "consumers": [
+      {
+        "queue": "citera-jobs",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 5,
+        "dead_letter_queue": "citera-jobs-dlq",
+      },
+    ],
+  },
+  "vars": {
+    "ENVIRONMENT": "development",
+    "MAX_JOB_ATTEMPTS": "5",
+    "MAX_BACKUP_BYTES": "26214400",
+    "PENDING_UPLOAD_TTL_SECONDS": "86400",
+    "METADATA_CACHE_SECONDS": "604800",
+    "CROSSREF_MAILTO": "",
+  },
+  "env": {
+    "production": {
+      "name": "citera-jobs",
+      "workers_dev": false,
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "citera-db",
+          "database_id": "00000000-0000-0000-0000-000000000000",
+          "migrations_dir": "../../migrations",
+        },
+      ],
+      "r2_buckets": [
+        {
+          "binding": "FILES",
+          "bucket_name": "citera-files",
+        },
+      ],
+      "queues": {
+        "producers": [
+          {
+            "binding": "JOBS",
+            "queue": "citera-jobs",
+          },
+        ],
+        "consumers": [
+          {
+            "queue": "citera-jobs",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 5,
+            "dead_letter_queue": "citera-jobs-dlq",
+          },
+        ],
+      },
+      "vars": {
+        "ENVIRONMENT": "production",
+        "MAX_JOB_ATTEMPTS": "5",
+        "MAX_BACKUP_BYTES": "26214400",
+        "PENDING_UPLOAD_TTL_SECONDS": "86400",
+        "METADATA_CACHE_SECONDS": "604800",
+        "CROSSREF_MAILTO": "",
+      },
+    },
+  },
+}

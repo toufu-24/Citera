@@ -1,0 +1,17 @@
+APP_ORIGIN=http://localhost:5173
+ALLOWED_ORIGINS=http://localhost:5173,http://localhost:4173,chrome-extension://replace-with-extension-id
+TOKEN_HASH_PEPPER=replace-with-a-different-random-secret
+IP_HASH_SALT=replace-with-an-independent-random-secret
+OWNER_EMAIL=you@example.com
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GOOGLE_REDIRECT_URI=http://localhost:8787/v1/auth/callback/google
+R2_ACCOUNT_ID=
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
+R2_BUCKET_NAME=citera-files
+MAX_USER_STORAGE_BYTES=5368709120
+MAX_EXPORT_BYTES=26214400
+ALLOWED_EXTENSION_IDS=replace-with-extension-id
+AUTH_DEV_BYPASS=true
+DEV_AUTH_TOKEN=

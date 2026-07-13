@@ -1,0 +1,6 @@
+node_modules
+dist
+coverage
+.wrangler
+pnpm-lock.yaml
+apps/extension/.output

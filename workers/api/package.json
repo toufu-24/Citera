@@ -1,0 +1,33 @@
+{
+  "name": "@citera/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./app": "./src/app.ts"
+  },
+  "scripts": {
+    "build": "wrangler deploy --dry-run --env=\"\" --outdir dist",
+    "dev": "wrangler dev --env=\"\" --config ../../wrangler.jsonc",
+    "deploy": "wrangler deploy --config ../../wrangler.jsonc",
+    "lint": "eslint src --max-warnings 0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --root ../.. workers/api/src"
+  },
+  "dependencies": {
+    "@citera/domain": "workspace:*",
+    "@citera/export": "workspace:*",
+    "@citera/sync": "workspace:*",
+    "arctic": "^3.7.0",
+    "aws4fetch": "^1.0.20",
+    "hono": "^4.8.10",
+    "zod": "^4.0.5"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260712.1",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.110.0"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "name": "@citera/config",
+  "version": "0.1.0",
+  "private": true,
+  "files": [
+    "*.json"
+  ],
+  "exports": {
+    "./tsconfig/react": "./tsconfig.react.json",
+    "./tsconfig/worker": "./tsconfig.worker.json"
+  },
+  "scripts": {
+    "build": "node -e \"void 0\"",
+    "lint": "node -e \"void 0\"",
+    "typecheck": "node -e \"void 0\"",
+    "test": "node -e \"void 0\""
+  }
+}

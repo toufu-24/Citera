@@ -1,0 +1,138 @@
+import { CheckCircle2, FileUp, LoaderCircle, X } from "lucide-react";
+import { useRef, useState } from "react";
+
+import { api, shouldSendCredentials } from "../lib/api";
+
+interface PdfUploadProps {
+  paperId: string;
+  onComplete: () => void;
+}
+
+function toHex(buffer: ArrayBuffer) {
+  return [...new Uint8Array(buffer)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export function PdfUpload({ paperId, onComplete }: PdfUploadProps) {
+  const input = useRef<HTMLInputElement>(null);
+  const [progress, setProgress] = useState(0);
+  const [state, setState] = useState<
+    "idle" | "hashing" | "uploading" | "verifying" | "done" | "error"
+  >("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  async function upload(file: File) {
+    setError(null);
+    if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
+      setState("error");
+      setError("PDF ファイルを選択してください。");
+      return;
+    }
+    if (file.size === 0) {
+      setState("error");
+      setError("空のファイルはアップロードできません。");
+      return;
+    }
+    try {
+      setState("hashing");
+      setProgress(12);
+      const sha256 = toHex(await crypto.subtle.digest("SHA-256", await file.arrayBuffer()));
+      const ticket = await api.uploadUrl(paperId, {
+        sizeBytes: file.size,
+        mediaType: "application/pdf",
+        sha256,
+        originalName: file.name,
+      });
+      if (ticket.duplicate && ticket.uploadState === "verified") {
+        setProgress(100);
+        setState("done");
+        onComplete();
+        return;
+      }
+      if (ticket.duplicate && ticket.uploadState === "uploaded") {
+        setProgress(82);
+        setState("verifying");
+        await api.completeUpload(ticket.fileId);
+        setProgress(100);
+        setState("done");
+        onComplete();
+        return;
+      }
+      if (!ticket.uploadUrl) throw new Error("The existing upload cannot be resumed");
+      setState("uploading");
+      setProgress(45);
+      const response = await fetch(ticket.uploadUrl, {
+        method: "PUT",
+        headers: ticket.headers,
+        body: file,
+        credentials: shouldSendCredentials(ticket.uploadUrl) ? "include" : "omit",
+      });
+      if (!response.ok) throw new Error(`Upload failed (${response.status})`);
+      setProgress(82);
+      setState("verifying");
+      await api.completeUpload(ticket.fileId);
+      setProgress(100);
+      setState("done");
+      onComplete();
+    } catch {
+      setState("error");
+      setError("アップロードを完了できませんでした。接続を確認して再試行してください。");
+    }
+  }
+
+  return (
+    <div className={`pdf-upload upload-${state}`}>
+      <input
+        ref={input}
+        hidden
+        type="file"
+        accept="application/pdf,.pdf"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          event.currentTarget.value = "";
+          if (file) void upload(file);
+        }}
+      />
+      {state === "idle" || state === "error" ? (
+        <button
+          type="button"
+          className="button secondary compact"
+          onClick={() => input.current?.click()}
+        >
+          <FileUp size={16} /> PDFを追加
+        </button>
+      ) : (
+        <div className="upload-progress">
+          <span aria-live="polite">
+            {state === "done" ? (
+              <CheckCircle2 size={16} />
+            ) : (
+              <LoaderCircle className="spin" size={16} />
+            )}
+            {state === "hashing"
+              ? "検証準備"
+              : state === "uploading"
+                ? "アップロード中"
+                : state === "verifying"
+                  ? "PDFを検証中"
+                  : "完了"}
+          </span>
+          <div
+            role="progressbar"
+            aria-label="PDF アップロード"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={progress}
+          >
+            <i style={{ width: `${progress}%` }} />
+          </div>
+        </div>
+      )}
+      {error && (
+        <div className="inline-error" role="alert">
+          <X size={14} />
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}

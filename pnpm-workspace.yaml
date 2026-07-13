@@ -1,0 +1,10 @@
+packages:
+  - apps/*
+  - workers/*
+  - packages/*
+  - tests/*
+
+allowBuilds:
+  esbuild: true
+  sharp: true
+  workerd: true

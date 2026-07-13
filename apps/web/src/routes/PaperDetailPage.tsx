@@ -1,0 +1,693 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, useNavigate, useParams } from "@tanstack/react-router";
+import DOMPurify from "dompurify";
+import {
+  AlertTriangle,
+  ArrowLeft,
+  BookMarked,
+  Check,
+  ChevronRight,
+  ExternalLink,
+  FileText,
+  FolderPlus,
+  MoreHorizontal,
+  Pencil,
+  RefreshCw,
+  Save,
+  Sparkles,
+  Star,
+  Tag,
+  Trash2,
+} from "lucide-react";
+import { marked } from "marked";
+import { useMemo, useState } from "react";
+
+import { PdfUpload } from "../components/PdfUpload";
+import { PdfViewer } from "../components/PdfViewer";
+import { api, type NoteRecord, type PaperDetail } from "../lib/api";
+
+const statusLabel: Record<PaperDetail["status"], string> = {
+  inbox: "未整理",
+  reading: "読書中",
+  read: "読了",
+  archived: "保管済み",
+};
+
+function formString(form: FormData, name: string): string {
+  const value = form.get(name);
+  return typeof value === "string" ? value : "";
+}
+
+function NoteCard({
+  note,
+  onSave,
+  onDelete,
+  saving,
+}: {
+  note: NoteRecord;
+  onSave: (contentMarkdown: string) => void;
+  onDelete: () => void;
+  saving: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [content, setContent] = useState(note.contentMarkdown);
+  const html = useMemo(
+    () => DOMPurify.sanitize(marked.parse(note.contentMarkdown, { async: false })),
+    [note.contentMarkdown],
+  );
+
+  return (
+    <article className="note-card">
+      <header>
+        <span className={`note-kind note-${note.noteType}`}>
+          {note.noteType === "page"
+            ? `p. ${note.pageNumber ?? "—"}`
+            : note.noteType === "todo"
+              ? "TODO"
+              : note.noteType === "summary"
+                ? "要約"
+                : "メモ"}
+        </span>
+        <time dateTime={note.updatedAt}>
+          {new Intl.DateTimeFormat("ja-JP", {
+            month: "short",
+            day: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          }).format(new Date(note.updatedAt))}
+        </time>
+        <button
+          type="button"
+          className="icon-button"
+          onClick={() => setEditing((value) => !value)}
+          aria-label={editing ? "メモ編集を閉じる" : "メモを編集"}
+        >
+          <Pencil size={14} />
+        </button>
+      </header>
+      {editing ? (
+        <form
+          className="note-editor"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (content.trim()) {
+              onSave(content);
+              setEditing(false);
+            }
+          }}
+        >
+          <textarea
+            value={content}
+            onChange={(event) => setContent(event.target.value)}
+            rows={5}
+            aria-label="メモ本文"
+          />
+          <footer>
+            <button type="button" className="text-button danger" onClick={onDelete}>
+              <Trash2 size={13} /> 削除
+            </button>
+            <button className="button primary compact" disabled={!content.trim() || saving}>
+              <Save size={14} /> 更新
+            </button>
+          </footer>
+        </form>
+      ) : (
+        <div className="markdown-body" dangerouslySetInnerHTML={{ __html: html }} />
+      )}
+    </article>
+  );
+}
+
+export function PaperDetailPage() {
+  const { paperId } = useParams({ from: "/app/papers/$paperId" });
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [currentPage, setCurrentPage] = useState(1);
+  const [mobileTab, setMobileTab] = useState<"pdf" | "details">("pdf");
+  const [editing, setEditing] = useState(false);
+  const [noteType, setNoteType] = useState<NoteRecord["noteType"]>("general");
+  const [noteContent, setNoteContent] = useState("");
+  const [tagEditorOpen, setTagEditorOpen] = useState(false);
+  const [collectionEditorOpen, setCollectionEditorOpen] = useState(false);
+
+  const paper = useQuery({ queryKey: ["paper", paperId], queryFn: () => api.paper(paperId) });
+  const duplicates = useQuery({
+    queryKey: ["duplicates", paperId],
+    queryFn: () => api.duplicateCandidates(paperId),
+    enabled: paper.data?.metadataState === "needs_review",
+  });
+  const availableTags = useQuery({
+    queryKey: ["tags"],
+    queryFn: api.tags,
+    enabled: tagEditorOpen,
+  });
+  const availableCollections = useQuery({
+    queryKey: ["collections"],
+    queryFn: api.collections,
+    enabled: collectionEditorOpen,
+  });
+
+  const update = useMutation({
+    mutationFn: (body: Record<string, unknown>) => {
+      if (!paper.data) throw new Error("Paper is not loaded");
+      return api.updatePaper(paperId, paper.data.version, body);
+    },
+    onSuccess: (next) => {
+      queryClient.setQueryData<PaperDetail>(["paper", paperId], (current) =>
+        current ? { ...current, ...next, notes: next.notes ?? current.notes } : current,
+      );
+      void queryClient.invalidateQueries({ queryKey: ["papers"] });
+    },
+  });
+
+  const refresh = useMutation({
+    mutationFn: () => api.refreshMetadata(paperId),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["paper", paperId] }),
+  });
+
+  const toggleTag = useMutation({
+    mutationFn: ({ tagId, attached }: { tagId: string; attached: boolean }) =>
+      attached ? api.removePaperTag(paperId, tagId) : api.addPaperTag(paperId, tagId),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["paper", paperId] }),
+        queryClient.invalidateQueries({ queryKey: ["papers"] }),
+      ]);
+    },
+  });
+
+  const toggleCollection = useMutation({
+    mutationFn: ({ collectionId, attached }: { collectionId: string; attached: boolean }) =>
+      attached
+        ? api.removePaperFromCollection(paperId, collectionId)
+        : api.addPaperToCollection(paperId, collectionId),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["paper", paperId] }),
+        queryClient.invalidateQueries({ queryKey: ["papers"] }),
+      ]);
+    },
+  });
+
+  const addNote = useMutation({
+    mutationFn: () =>
+      api.addNote(paperId, {
+        noteType,
+        pageNumber: noteType === "page" ? currentPage : null,
+        contentMarkdown: noteContent,
+      }),
+    onSuccess: () => {
+      setNoteContent("");
+      void queryClient.invalidateQueries({ queryKey: ["paper", paperId] });
+    },
+  });
+
+  const editNote = useMutation({
+    mutationFn: ({ note, contentMarkdown }: { note: NoteRecord; contentMarkdown: string }) =>
+      api.updateNote(note.id, note.version, { contentMarkdown }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["paper", paperId] }),
+  });
+
+  const deleteNote = useMutation({
+    mutationFn: (note: NoteRecord) => api.removeNote(note.id, note.version),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["paper", paperId] }),
+  });
+
+  const deletePaper = useMutation({
+    mutationFn: () => {
+      if (!paper.data) throw new Error("Paper is not loaded");
+      return api.removePaper(paperId, paper.data.version);
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["papers"] });
+      void navigate({ to: "/library" });
+    },
+  });
+
+  if (paper.isLoading) {
+    return (
+      <div className="page">
+        <div className="loading-state tall">
+          <span className="spinner" />
+          <p>論文を開いています…</p>
+        </div>
+      </div>
+    );
+  }
+  if (!paper.data || paper.isError) {
+    return (
+      <div className="page">
+        <div className="empty-state tall">
+          <AlertTriangle size={30} />
+          <h1>論文を開けませんでした</h1>
+          <p>削除済みか、アクセス権がない可能性があります。</p>
+          <Link className="button secondary" to="/library">
+            <ArrowLeft size={16} /> ライブラリへ
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  const data = paper.data;
+  const pdf = data.files.find((file) => file.uploadState === "verified") ?? data.files[0];
+  const doi = data.identifiers.find(
+    (identifier) => (identifier.identifierType ?? identifier.type) === "doi",
+  )?.normalizedValue;
+  const arxivId = data.identifiers.find(
+    (identifier) => (identifier.identifierType ?? identifier.type) === "arxiv",
+  )?.normalizedValue;
+
+  function submitMetadata(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    update.mutate(
+      {
+        title: formString(form, "title"),
+        abstract: formString(form, "abstract") || null,
+        venue: formString(form, "venue") || null,
+        publicationYear: formString(form, "publicationYear")
+          ? Number(formString(form, "publicationYear"))
+          : null,
+        sourceUrl: formString(form, "sourceUrl") || null,
+      },
+      { onSuccess: () => setEditing(false) },
+    );
+  }
+
+  return (
+    <div className="paper-detail-page">
+      <header className="detail-topbar">
+        <Link to="/library" className="back-link">
+          <ArrowLeft size={17} /> ライブラリ
+        </Link>
+        <div className="detail-breadcrumb">
+          <span>ライブラリ</span>
+          <ChevronRight size={14} />
+          <strong>{data.title}</strong>
+        </div>
+        <div className="detail-actions">
+          <PdfUpload
+            paperId={paperId}
+            onComplete={() => void queryClient.invalidateQueries({ queryKey: ["paper", paperId] })}
+          />
+          <button type="button" className="icon-button" aria-label="その他">
+            <MoreHorizontal size={19} />
+          </button>
+        </div>
+      </header>
+
+      <div className="mobile-detail-tabs" role="tablist" aria-label="論文詳細の表示">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mobileTab === "pdf"}
+          className={mobileTab === "pdf" ? "active" : ""}
+          onClick={() => setMobileTab("pdf")}
+        >
+          PDF
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mobileTab === "details"}
+          className={mobileTab === "details" ? "active" : ""}
+          onClick={() => setMobileTab("details")}
+        >
+          情報とメモ
+        </button>
+      </div>
+
+      <div className="detail-split">
+        <div
+          role="tabpanel"
+          className={mobileTab === "pdf" ? "pdf-pane mobile-active" : "pdf-pane"}
+        >
+          <PdfViewer fileId={pdf?.id ?? null} title={data.title} onPageChange={setCurrentPage} />
+        </div>
+        <aside
+          role="tabpanel"
+          className={mobileTab === "details" ? "metadata-pane mobile-active" : "metadata-pane"}
+        >
+          {data.metadataState === "needs_review" && (
+            <div className="review-banner">
+              <Sparkles size={18} />
+              <div>
+                <strong>書誌情報の確認が必要です</strong>
+                <p>
+                  {duplicates.data?.length
+                    ? `${duplicates.data.length} 件の類似論文があります。`
+                    : "複数の情報源から候補が見つかりました。"}
+                </p>
+              </div>
+            </div>
+          )}
+          <section className="paper-identity">
+            <div className="paper-meta-line">
+              <label className={`status-badge status-${data.status}`}>
+                <span className="sr-only">状態</span>
+                <select
+                  value={data.status}
+                  onChange={(event) => update.mutate({ status: event.target.value })}
+                  disabled={update.isPending}
+                >
+                  {Object.entries(statusLabel).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <span>{data.publicationYear ?? "出版年不明"}</span>
+              <span>{data.venue ?? "掲載先未設定"}</span>
+            </div>
+            <h1>{data.title}</h1>
+            <p className="detail-authors">
+              {data.authors.map((author) => author.displayName).join(", ") || "著者未設定"}
+            </p>
+            <div className="identifier-row">
+              {doi && (
+                <a href={`https://doi.org/${doi}`} target="_blank" rel="noreferrer">
+                  DOI {doi}
+                  <ExternalLink size={13} />
+                </a>
+              )}
+              {arxivId && (
+                <a href={`https://arxiv.org/abs/${arxivId}`} target="_blank" rel="noreferrer">
+                  arXiv {arxivId}
+                  <ExternalLink size={13} />
+                </a>
+              )}
+            </div>
+            <div className="rating-row" aria-label="評価">
+              {[1, 2, 3, 4, 5].map((value) => (
+                <button
+                  type="button"
+                  key={value}
+                  onClick={() => update.mutate({ rating: data.rating === value ? null : value })}
+                  disabled={update.isPending}
+                  aria-label={`${value}つ星`}
+                >
+                  <Star size={19} fill={value <= (data.rating ?? 0) ? "currentColor" : "none"} />
+                </button>
+              ))}
+            </div>
+            <div className="paper-tags">
+              {data.tags.map((tag) => (
+                <span className="tag-chip" key={tag.id}>
+                  <i style={{ background: tag.color ?? "#74856f" }} />
+                  {tag.name}
+                </span>
+              ))}
+              <button
+                type="button"
+                className="tag-add"
+                aria-expanded={tagEditorOpen}
+                onClick={() => setTagEditorOpen((value) => !value)}
+              >
+                <Tag size={14} /> 追加
+              </button>
+              {tagEditorOpen && (
+                <div className="relation-editor" role="group" aria-label="タグを編集">
+                  {availableTags.isPending ? (
+                    <span className="relation-message">タグを読み込んでいます…</span>
+                  ) : availableTags.isError ? (
+                    <span className="form-error" role="alert">
+                      タグを読み込めませんでした。
+                    </span>
+                  ) : availableTags.data?.length ? (
+                    availableTags.data.map((tag) => {
+                      const attached = data.tags.some((current) => current.id === tag.id);
+                      return (
+                        <label key={tag.id}>
+                          <input
+                            type="checkbox"
+                            checked={attached}
+                            disabled={toggleTag.isPending}
+                            onChange={() => toggleTag.mutate({ tagId: tag.id, attached })}
+                          />
+                          <i style={{ background: tag.color ?? "#74856f" }} />
+                          {tag.name}
+                        </label>
+                      );
+                    })
+                  ) : (
+                    <span className="relation-message">利用できるタグがありません。</span>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="collection-row">
+              <BookMarked size={16} />
+              <span>
+                {data.collections.map((collection) => collection.name).join(" / ") ||
+                  "コレクション未設定"}
+              </span>
+              <button
+                type="button"
+                aria-label="コレクションを編集"
+                aria-expanded={collectionEditorOpen}
+                onClick={() => setCollectionEditorOpen((value) => !value)}
+              >
+                <FolderPlus size={16} />
+              </button>
+            </div>
+            {collectionEditorOpen && (
+              <div
+                className="relation-editor collection-editor"
+                role="group"
+                aria-label="コレクションを編集"
+              >
+                {availableCollections.isPending ? (
+                  <span className="relation-message">コレクションを読み込んでいます…</span>
+                ) : availableCollections.isError ? (
+                  <span className="form-error" role="alert">
+                    コレクションを読み込めませんでした。
+                  </span>
+                ) : availableCollections.data?.length ? (
+                  availableCollections.data.map((collection) => {
+                    const attached = data.collections.some(
+                      (current) => current.id === collection.id,
+                    );
+                    return (
+                      <label key={collection.id}>
+                        <input
+                          type="checkbox"
+                          checked={attached}
+                          disabled={toggleCollection.isPending}
+                          onChange={() =>
+                            toggleCollection.mutate({ collectionId: collection.id, attached })
+                          }
+                        />
+                        {collection.name}
+                      </label>
+                    );
+                  })
+                ) : (
+                  <span className="relation-message">利用できるコレクションがありません。</span>
+                )}
+              </div>
+            )}
+            {(toggleTag.error || toggleCollection.error) && (
+              <p className="form-error" role="alert">
+                分類を更新できませんでした。
+              </p>
+            )}
+            {update.error && (
+              <p className="form-error" role="alert">
+                変更を保存できませんでした。再読み込みしてお試しください。
+              </p>
+            )}
+          </section>
+
+          <section className="metadata-section">
+            <header>
+              <h2>書誌情報</h2>
+              <div>
+                <button
+                  type="button"
+                  className="text-icon-button"
+                  onClick={() => refresh.mutate()}
+                  disabled={refresh.isPending}
+                >
+                  <RefreshCw size={15} className={refresh.isPending ? "spin" : ""} /> 再取得
+                </button>
+                <button
+                  type="button"
+                  className="text-icon-button"
+                  onClick={() => setEditing((value) => !value)}
+                >
+                  <Pencil size={15} /> 編集
+                </button>
+              </div>
+            </header>
+            {editing ? (
+              <form className="metadata-form" onSubmit={submitMetadata}>
+                <label>
+                  タイトル
+                  <input name="title" defaultValue={data.title} required />
+                </label>
+                <div className="form-grid">
+                  <label>
+                    出版年
+                    <input
+                      name="publicationYear"
+                      type="number"
+                      min={1000}
+                      max={9999}
+                      defaultValue={data.publicationYear ?? ""}
+                    />
+                  </label>
+                  <label>
+                    掲載誌・会議
+                    <input name="venue" defaultValue={data.venue ?? ""} />
+                  </label>
+                </div>
+                <label>
+                  元ページ
+                  <input name="sourceUrl" type="url" defaultValue={data.sourceUrl ?? ""} />
+                </label>
+                <label>
+                  要旨
+                  <textarea name="abstract" rows={6} defaultValue={data.abstract ?? ""} />
+                </label>
+                <div className="form-actions">
+                  <button
+                    type="button"
+                    className="button secondary compact"
+                    onClick={() => setEditing(false)}
+                  >
+                    キャンセル
+                  </button>
+                  <button className="button primary compact" disabled={update.isPending}>
+                    <Save size={15} /> 保存
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div className="metadata-summary">
+                {data.abstract ? (
+                  <p>{data.abstract}</p>
+                ) : (
+                  <p className="muted-copy">
+                    要旨はまだありません。書誌情報を再取得するか、編集して追加できます。
+                  </p>
+                )}
+                {data.sourceUrl && (
+                  <a href={data.sourceUrl} target="_blank" rel="noreferrer">
+                    <ExternalLink size={14} /> 元ページを開く
+                  </a>
+                )}
+              </div>
+            )}
+            {refresh.error && (
+              <p className="form-error" role="alert">
+                書誌情報の再取得を開始できませんでした。
+              </p>
+            )}
+          </section>
+
+          <section className="notes-section">
+            <header>
+              <div>
+                <p className="eyebrow">ANNOTATIONS</p>
+                <h2>
+                  メモ <span>{data.notes.length}</span>
+                </h2>
+              </div>
+            </header>
+            <form
+              className="note-composer"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (noteContent.trim()) addNote.mutate();
+              }}
+            >
+              <div className="note-type-row">
+                <select
+                  value={noteType}
+                  onChange={(event) => setNoteType(event.target.value as NoteRecord["noteType"])}
+                  aria-label="メモ種別"
+                >
+                  <option value="general">全体メモ</option>
+                  <option value="page">ページメモ（p. {currentPage}）</option>
+                  <option value="summary">要約</option>
+                  <option value="todo">TODO</option>
+                </select>
+                <span>Markdown</span>
+              </div>
+              <textarea
+                value={noteContent}
+                onChange={(event) => setNoteContent(event.target.value)}
+                onKeyDown={(event) => {
+                  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                    event.preventDefault();
+                    event.currentTarget.form?.requestSubmit();
+                  }
+                }}
+                rows={4}
+                aria-label="新しいメモ"
+                placeholder={
+                  noteType === "page"
+                    ? `ページ ${currentPage} の気づきを残す…`
+                    : "この論文についてメモを残す…"
+                }
+              />
+              <footer>
+                <span>⌘ + Enter で保存</span>
+                <button
+                  className="button primary compact"
+                  disabled={!noteContent.trim() || addNote.isPending}
+                >
+                  <Check size={15} /> 保存
+                </button>
+              </footer>
+            </form>
+            {addNote.error && (
+              <p className="form-error" role="alert">
+                メモを保存できませんでした。
+              </p>
+            )}
+            <div className="note-list">
+              {data.notes.length ? (
+                data.notes.map((note) => (
+                  <NoteCard
+                    key={note.id}
+                    note={note}
+                    saving={editNote.isPending}
+                    onSave={(contentMarkdown) => editNote.mutate({ note, contentMarkdown })}
+                    onDelete={() => {
+                      if (window.confirm("このメモを削除しますか？")) deleteNote.mutate(note);
+                    }}
+                  />
+                ))
+              ) : (
+                <div className="notes-empty">
+                  <FileText size={20} />
+                  <p>まだメモはありません。読みながら気づきを残しましょう。</p>
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className="danger-zone">
+            <button
+              type="button"
+              disabled={deletePaper.isPending}
+              onClick={() => {
+                if (window.confirm("この論文をゴミ箱へ移動しますか？")) deletePaper.mutate();
+              }}
+            >
+              <Trash2 size={15} /> {deletePaper.isPending ? "移動中…" : "ゴミ箱へ移動"}
+            </button>
+            {deletePaper.error && (
+              <p className="form-error" role="alert">
+                論文を削除できませんでした。
+              </p>
+            )}
+          </section>
+        </aside>
+      </div>
+    </div>
+  );
+}

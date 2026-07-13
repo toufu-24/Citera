@@ -1,0 +1,22 @@
+[tools]
+node = "24.14.0"
+"npm:pnpm" = "11.7.0"
+
+[env]
+WRANGLER_LOG_PATH = "{{config_root}}/.wrangler/logs"
+
+[tasks.setup]
+description = "Install the Citera workspace dependencies"
+run = "pnpm install"
+
+[tasks.dev]
+description = "Start the Citera web app and local Workers"
+run = "pnpm dev"
+
+[tasks.check]
+description = "Run lint, type checking, and tests"
+run = "pnpm check"
+
+[tasks.deploy]
+description = "Build and deploy Citera to Cloudflare"
+run = "pnpm deploy"

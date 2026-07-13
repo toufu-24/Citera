@@ -1,0 +1,35 @@
+{
+  "name": "@citera/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "eslint src vite.config.ts",
+    "typecheck": "tsc -b --pretty false",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@citera/domain": "workspace:*",
+    "@hookform/resolvers": "^5.1.1",
+    "@tanstack/react-query": "^5.83.0",
+    "@tanstack/react-router": "^1.130.12",
+    "dexie": "^4.0.11",
+    "dompurify": "^3.2.6",
+    "lucide-react": "^0.525.0",
+    "marked": "^16.1.1",
+    "pdfjs-dist": "^5.3.93",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-hook-form": "^7.61.1",
+    "zod": "^4.0.14"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.9",
+    "@types/react-dom": "^19.1.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "vite": "^7.0.6",
+    "vite-plugin-pwa": "^1.0.2"
+  }
+}
