@@ -24,6 +24,7 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
 import { ApiRequestError, api, type PaperListItem } from "../lib/api";
 import { db } from "../lib/database";
+import { PaperDetailView } from "./PaperDetailPage";
 
 type StatusFilter = "all" | PaperListItem["status"] | "deleted";
 
@@ -77,13 +78,23 @@ function PaperRow({
   paper,
   checked,
   onCheck,
+  onOpen,
+  open,
 }: {
   paper: PaperListItem;
   checked: boolean;
   onCheck: (checked: boolean) => void;
+  onOpen: (paperId: string) => void;
+  open: boolean;
 }) {
   return (
-    <tr className={checked ? "paper-row selected" : "paper-row"}>
+    <tr
+      className={`paper-row${checked ? " selected" : ""}${open ? " is-open" : ""}`}
+      onClick={(event) => {
+        if ((event.target as HTMLElement).closest("a, button, input")) return;
+        onOpen(paper.id);
+      }}
+    >
       <td className="selection-cell">
         <input
           type="checkbox"
@@ -97,7 +108,16 @@ function PaperRow({
           <FileText size={19} />
         </div>
         <div>
-          <Link to="/papers/$paperId" params={{ paperId: paper.id }} className="paper-title">
+          <Link
+            to="/papers/$paperId"
+            params={{ paperId: paper.id }}
+            className="paper-title"
+            onClick={(event) => {
+              if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+              event.preventDefault();
+              onOpen(paper.id);
+            }}
+          >
             {paper.title}
           </Link>
           <p className="paper-authors">
@@ -151,6 +171,7 @@ export function LibraryPage() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkTagId, setBulkTagId] = useState("");
+  const [openPaperId, setOpenPaperId] = useState<string | null>(null);
   const createDialog = useRef<HTMLDialogElement>(null);
   const queryClient = useQueryClient();
   const preferences = useQuery({ queryKey: ["preferences"], queryFn: api.preferences });
@@ -290,6 +311,20 @@ export function LibraryPage() {
   });
 
   const allSelected = items.length > 0 && items.every((paper) => selected.has(paper.id));
+
+  useEffect(() => {
+    if (!openPaperId) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpenPaperId(null);
+    };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [openPaperId]);
 
   function toggleAll(checked: boolean) {
     setSelected(checked ? new Set(items.map((paper) => paper.id)) : new Set());
@@ -626,6 +661,8 @@ export function LibraryPage() {
                     paper={paper}
                     checked={selected.has(paper.id)}
                     onCheck={(checked) => toggleOne(paper.id, checked)}
+                    onOpen={setOpenPaperId}
+                    open={openPaperId === paper.id}
                   />
                 ))}
               </tbody>
@@ -643,6 +680,24 @@ export function LibraryPage() {
           </button>
         )}
       </section>
+
+      {openPaperId && (
+        <>
+          <button
+            type="button"
+            className="library-detail-backdrop"
+            aria-label="論文詳細を閉じる"
+            onClick={() => setOpenPaperId(null)}
+          />
+          <aside className="library-detail-drawer" aria-label="論文詳細">
+            <PaperDetailView
+              paperId={openPaperId}
+              drawer
+              onClose={() => setOpenPaperId(null)}
+            />
+          </aside>
+        </>
+      )}
 
       <dialog className="modal" ref={createDialog}>
         <form onSubmit={submitCreate}>

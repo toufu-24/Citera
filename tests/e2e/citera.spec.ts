@@ -66,6 +66,7 @@ test("owner can add, upload, read, annotate, search, and export a paper", async 
     mimeType: "application/pdf",
     buffer: createMinimalPdf(),
   });
+  await page.getByRole("button", { name: "PDFを見る" }).click();
   await expect(page.locator(".pdf-stage canvas").first()).toBeVisible({ timeout: 20_000 });
 
   for (const viewport of [
@@ -99,6 +100,8 @@ test("owner can add, upload, read, annotate, search, and export a paper", async 
   await expect(page.getByRole("img", { name: `${title}、8 ページ目` })).toBeVisible();
   await expect(page.locator(".pdf-stage canvas")).toHaveCount(4);
 
+  await page.getByRole("button", { name: "論文情報に戻る" }).click();
+  await page.getByRole("tab", { name: "メモ" }).click();
   await page
     .getByPlaceholder("この論文についてメモを残す…")
     .fill("**重要:** 再現実験を行う。\n\n- dataset を確認");
