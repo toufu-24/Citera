@@ -6,7 +6,6 @@ import {
   Cloud,
   LogOut,
   PanelLeftClose,
-  Search,
   Settings,
   WifiOff,
 } from "lucide-react";
@@ -85,10 +84,6 @@ export function AppShell() {
             <BookOpen size={19} />
             <span>ライブラリ</span>
           </Link>
-          <a href="/library?focus=search">
-            <Search size={19} />
-            <span>高度な検索</span>
-          </a>
           <Link to="/settings" activeProps={{ className: "active" }}>
             <Settings size={19} />
             <span>設定</span>

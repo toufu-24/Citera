@@ -75,9 +75,22 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   const [libraryQuery, setLibraryQuery] = useState("");
   const [comparePdfs, setComparePdfs] = useState(false);
+  const [pdfFetchQueued, setPdfFetchQueued] = useState(false);
+  const [pdfFetchJobId, setPdfFetchJobId] = useState<string | null>(null);
+  const [pdfFetchError, setPdfFetchError] = useState<string | null>(null);
   const compareViewersRef = useRef<HTMLDivElement>(null);
 
-  const paper = useQuery({ queryKey: ["paper", paperId], queryFn: () => api.paper(paperId) });
+  const paper = useQuery({
+    queryKey: ["paper", paperId],
+    queryFn: () => api.paper(paperId),
+  });
+  const pdfFetchStatus = useQuery({
+    queryKey: ["pdf-fetch", paperId, pdfFetchJobId],
+    queryFn: () => api.fetchPdfStatus(paperId, pdfFetchJobId ?? ""),
+    enabled: Boolean(pdfFetchJobId),
+    refetchInterval: pdfFetchJobId ? 2_000 : false,
+    retry: 2,
+  });
   const libraryPapers = useQuery({
     queryKey: ["papers", "detail-pane"],
     queryFn: () => api.papers(new URLSearchParams({ limit: "50", sort: "updated_at:desc" })),
@@ -115,6 +128,17 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
   const refresh = useMutation({
     mutationFn: () => api.refreshMetadata(paperId),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["paper", paperId] }),
+  });
+
+  const fetchPdf = useMutation({
+    mutationFn: () => api.fetchPdf(paperId),
+    onSuccess: (result) => {
+      setPdfFetchError(null);
+      setPdfFetchJobId(result.jobId ?? null);
+      setPdfFetchQueued(Boolean(result.jobId));
+      void queryClient.invalidateQueries({ queryKey: ["paper", paperId] });
+      void queryClient.invalidateQueries({ queryKey: ["papers"] });
+    },
   });
 
   const toggleTag = useMutation({
@@ -185,12 +209,53 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
     if (paper.data && summaryDraft === null) setSummaryDraft(paper.data.summary ?? "");
   }, [paper.data, summaryDraft]);
   useEffect(() => {
+    if (paper.data?.files.some((file) => file.uploadState === "verified")) {
+      setPdfFetchQueued(false);
+      setPdfFetchJobId(null);
+    }
+  }, [paper.data?.files]);
+  useEffect(() => {
+    const statusData = pdfFetchStatus.data;
+    const status = statusData?.state;
+    if (status === "complete") {
+      setPdfFetchQueued(false);
+      setPdfFetchJobId(null);
+      void queryClient.invalidateQueries({ queryKey: ["paper", paperId] });
+      void queryClient.invalidateQueries({ queryKey: ["papers"] });
+    } else if (status === "failed") {
+      setPdfFetchQueued(false);
+      setPdfFetchJobId(null);
+      setPdfFetchError(
+        statusData?.errorMessage ??
+          "PDFの取得に失敗しました。Jobs Workerのログを確認してください。",
+      );
+    } else if (pdfFetchStatus.isError && pdfFetchJobId) {
+      setPdfFetchQueued(false);
+      setPdfFetchJobId(null);
+      setPdfFetchError("PDF取得ジョブの状態を確認できませんでした。");
+    }
+  }, [pdfFetchJobId, pdfFetchStatus.data, pdfFetchStatus.isError, paperId, queryClient]);
+  useEffect(() => {
+    if (!pdfFetchJobId) return;
+    const timeoutId = window.setTimeout(() => {
+      setPdfFetchQueued(false);
+      setPdfFetchJobId(null);
+      setPdfFetchError(
+        "PDF取得の状態を確認できませんでした。Jobs Workerが起動しているか確認してください。",
+      );
+    }, 120_000);
+    return () => window.clearTimeout(timeoutId);
+  }, [pdfFetchJobId]);
+  useEffect(() => {
     setPaperNote(null);
     setSummaryDraft(null);
     setCurrentPage(1);
     setMobileTab("details");
     setInspectorTab("info");
     setComparePdfs(false);
+    setPdfFetchQueued(false);
+    setPdfFetchJobId(null);
+    setPdfFetchError(null);
   }, [paperId]);
   useEffect(() => {
     document.body.classList.toggle("citera-focus-mode", focusMode);
@@ -710,7 +775,7 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
                       </div>
                     )}
                     <div className="paper-quick-actions">
-                      {pdf && (
+                      {data.hasPdf ? (
                         <button
                           type="button"
                           className="button primary"
@@ -718,7 +783,21 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
                         >
                           <BookOpen size={17} /> PDFを見る
                         </button>
-                      )}
+                      ) : arxivId || doi ? (
+                        <button
+                          type="button"
+                          className="button primary"
+                          onClick={() => fetchPdf.mutate()}
+                          disabled={fetchPdf.isPending || pdfFetchQueued}
+                        >
+                          <FileText size={17} />
+                          {fetchPdf.isPending
+                            ? "取得を開始中…"
+                            : pdfFetchQueued
+                              ? "PDF取得中…"
+                              : "PDFを自動取得"}
+                        </button>
+                      ) : null}
                       <a className="button secondary" href="#paper-abstract">
                         <Sparkles size={17} /> 要旨を読む
                       </a>
@@ -738,6 +817,12 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
                     {update.error && (
                       <p className="form-error" role="alert">
                         変更を保存できませんでした。再読み込みしてお試しください。
+                      </p>
+                    )}
+                    {(fetchPdf.error || pdfFetchError) && (
+                      <p className="form-error" role="alert">
+                        {pdfFetchError ??
+                          "PDFを自動取得できませんでした。識別子を確認するか、手動で追加してください。"}
                       </p>
                     )}
                   </section>
@@ -902,7 +987,9 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
                       className="button primary compact"
                       onClick={() => update.mutate({ noteMarkdown: paperNote?.trim() || null })}
                       disabled={
-                        update.isPending || paperNote === null || paperNote === (data.noteMarkdown ?? "")
+                        update.isPending ||
+                        paperNote === null ||
+                        paperNote === (data.noteMarkdown ?? "")
                       }
                     >
                       <Save size={15} /> 保存

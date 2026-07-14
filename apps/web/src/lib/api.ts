@@ -337,10 +337,10 @@ export const api = {
   completeUpload: (fileId: string) =>
     request<PaperFile>(`/v1/files/${encodeURIComponent(fileId)}/complete`, { method: "POST" }),
   retryUpload: (fileId: string) =>
-    request<{ file: PaperFile; upload: { url: string; headers: Record<string, string>; expiresIn: number } }>(
-      `/v1/files/${encodeURIComponent(fileId)}/retry`,
-      { method: "POST" },
-    ),
+    request<{
+      file: PaperFile;
+      upload: { url: string; headers: Record<string, string>; expiresIn: number };
+    }>(`/v1/files/${encodeURIComponent(fileId)}/retry`, { method: "POST" }),
   updateFile: (fileId: string, body: Record<string, unknown>) =>
     request<PaperFile>(`/v1/files/${encodeURIComponent(fileId)}`, {
       method: "PATCH",
@@ -350,8 +350,7 @@ export const api = {
     request<void>(`/v1/files/${encodeURIComponent(fileId)}`, { method: "DELETE" }),
   restoreFile: (fileId: string) =>
     request<PaperFile>(`/v1/files/${encodeURIComponent(fileId)}/restore`, { method: "POST" }),
-  bibtex: (itemId: string) =>
-    requestText(`/v1/papers/${encodeURIComponent(itemId)}/bibtex`),
+  bibtex: (itemId: string) => requestText(`/v1/papers/${encodeURIComponent(itemId)}/bibtex`),
   resolveDoi: (doi: string) =>
     request<{ doi: string; metadata: Record<string, unknown> }>("/v1/metadata/resolve-doi", {
       method: "POST",
@@ -362,6 +361,17 @@ export const api = {
       `/v1/papers/${encodeURIComponent(paperId)}/refresh-metadata`,
       { method: "POST" },
     ),
+  fetchPdf: (paperId: string) =>
+    request<{ jobId?: string; state: string; fileId?: string }>(
+      `/v1/papers/${encodeURIComponent(paperId)}/fetch-pdf`,
+      { method: "POST" },
+    ),
+  fetchPdfStatus: (paperId: string, jobId: string) =>
+    request<{
+      state: "queued" | "running" | "retrying" | "complete" | "failed";
+      errorCode?: string | null;
+      errorMessage?: string | null;
+    }>(`/v1/papers/${encodeURIComponent(paperId)}/fetch-pdf/${encodeURIComponent(jobId)}`),
   duplicateCandidates: async (paperId: string) =>
     (
       await request<{

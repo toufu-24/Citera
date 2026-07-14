@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { sha256ForStream } from "./handlers";
 import { JobMessageSchema, jobIdempotencyKey, retryDelaySeconds, shouldRetry } from "./index";
 
 const job = JobMessageSchema.parse({
@@ -41,6 +42,23 @@ describe("queue job idempotency", () => {
     expect(jobIdempotencyKey(deletion)).toBe("account.delete:usr_01J00000000000000000000000:1");
     expect(jobIdempotencyKey({ ...deletion, sourceVersion: 2 })).not.toBe(
       jobIdempotencyKey(deletion),
+    );
+  });
+});
+
+describe("streaming PDF checksum", () => {
+  it("calculates SHA-256 across multiple chunks", async () => {
+    const encoder = new TextEncoder();
+    const chunks = [encoder.encode("The quick brown "), encoder.encode("fox jumps over the lazy dog")];
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+
+    await expect(sha256ForStream(stream)).resolves.toBe(
+      "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592",
     );
   });
 });

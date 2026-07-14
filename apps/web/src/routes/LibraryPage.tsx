@@ -183,6 +183,7 @@ export function LibraryPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkTagId, setBulkTagId] = useState("");
   const [openPaperId, setOpenPaperId] = useState<string | null>(null);
+  const [manualEntry, setManualEntry] = useState(false);
   const [drawerWidth, setDrawerWidth] = useState(() =>
     clampDrawerWidth(Math.min(720, Math.round(window.innerWidth * 0.58))),
   );
@@ -240,6 +241,7 @@ export function LibraryPage() {
     onSuccess: async () => {
       createDialog.current?.querySelector("form")?.reset();
       createDialog.current?.close();
+      setManualEntry(false);
       await queryClient.invalidateQueries({ queryKey: ["papers"] });
     },
   });
@@ -327,6 +329,12 @@ export function LibraryPage() {
   });
 
   const allSelected = items.length > 0 && items.every((paper) => selected.has(paper.id));
+
+  function openCreateDialog() {
+    createPaper.reset();
+    setManualEntry(false);
+    createDialog.current?.showModal();
+  }
 
   useEffect(() => {
     if (!openPaperId) return;
@@ -441,7 +449,7 @@ export function LibraryPage() {
             <Upload size={17} /> インポート
             <input type="file" accept=".bib,.ris,.json,.csv" hidden />
           </label>
-          <button className="button primary" onClick={() => createDialog.current?.showModal()}>
+          <button className="button primary" onClick={openCreateDialog}>
             <Plus size={18} /> 論文を追加
           </button>
         </div>
@@ -675,7 +683,7 @@ export function LibraryPage() {
             <BookOpen size={31} />
             <h2>最初の論文を追加しましょう</h2>
             <p>DOI、arXiv ID、または手入力から始められます。</p>
-            <button className="button primary" onClick={() => createDialog.current?.showModal()}>
+            <button className="button primary" onClick={openCreateDialog}>
               <Plus size={17} /> 論文を追加
             </button>
           </div>
@@ -797,52 +805,82 @@ export function LibraryPage() {
             </button>
           </header>
           <p className="modal-description">
-            DOI を入力すると、保存後に書誌情報を自動取得します。分かる項目だけでも登録できます。
+            DOIまたはarXiv IDを入力すると、書誌情報を自動取得して登録します。
           </p>
           <label className="form-field">
-            <span>タイトル（DOI入力時は自動取得）</span>
-            <input name="title" autoFocus placeholder="論文タイトル" />
+            <span>{manualEntry ? "DOI / arXiv ID（任意）" : "DOI / arXiv ID"}</span>
+            <input
+              name="doi"
+              autoFocus
+              required={!manualEntry}
+              placeholder="10.1000/xyz または 2401.01234"
+            />
           </label>
-          <label className="form-field">
-            <span>著者</span>
-            <input name="authors" placeholder="著者名をカンマ区切りで入力" />
-          </label>
-          <div className="form-grid">
-            <label className="form-field">
-              <span>出版年</span>
-              <input
-                name="publicationYear"
-                inputMode="numeric"
-                pattern="[0-9]{4}"
-                placeholder="2026"
-              />
-            </label>
-            <label className="form-field">
-              <span>状態</span>
-              <select name="status" defaultValue="">
-                <option value="">
-                  設定の既定値（
-                  {statusLabel[preferences.data?.defaultStatus ?? "inbox"]}）
-                </option>
-                <option value="inbox">未整理</option>
-                <option value="reading">読書中</option>
-                <option value="read">読了</option>
-                <option value="archived">保管済み</option>
-              </select>
-            </label>
-          </div>
-          <label className="form-field">
-            <span>掲載誌・会議</span>
-            <input name="venue" />
-          </label>
-          <label className="form-field">
-            <span>DOI / arXiv ID</span>
-            <input name="doi" placeholder="10.1000/xyz または 2401.01234" />
-          </label>
-          <label className="form-field">
-            <span>元ページ URL</span>
-            <input name="sourceUrl" type="url" placeholder="https://…" />
-          </label>
+          {!manualEntry ? (
+            <button
+              type="button"
+              className="text-button modal-manual-switch"
+              onClick={() => setManualEntry(true)}
+            >
+              DOIがない場合は手入力
+            </button>
+          ) : (
+            <section className="manual-entry-block" aria-label="論文情報を手入力">
+              <header>
+                <div>
+                  <strong>書誌情報を手入力</strong>
+                  <span>DOIがなくても登録できます。</span>
+                </div>
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => setManualEntry(false)}
+                >
+                  DOI入力に戻る
+                </button>
+              </header>
+              <label className="form-field">
+                <span>タイトル</span>
+                <input name="title" required placeholder="論文タイトル" />
+              </label>
+              <label className="form-field">
+                <span>著者</span>
+                <input name="authors" placeholder="著者名をカンマ区切りで入力" />
+              </label>
+              <div className="form-grid">
+                <label className="form-field">
+                  <span>出版年</span>
+                  <input
+                    name="publicationYear"
+                    inputMode="numeric"
+                    pattern="[0-9]{4}"
+                    placeholder="2026"
+                  />
+                </label>
+                <label className="form-field">
+                  <span>状態</span>
+                  <select name="status" defaultValue="">
+                    <option value="">
+                      設定の既定値（
+                      {statusLabel[preferences.data?.defaultStatus ?? "inbox"]}）
+                    </option>
+                    <option value="inbox">未整理</option>
+                    <option value="reading">読書中</option>
+                    <option value="read">読了</option>
+                    <option value="archived">保管済み</option>
+                  </select>
+                </label>
+              </div>
+              <label className="form-field">
+                <span>掲載誌・会議</span>
+                <input name="venue" />
+              </label>
+              <label className="form-field">
+                <span>元ページ URL</span>
+                <input name="sourceUrl" type="url" placeholder="https://…" />
+              </label>
+            </section>
+          )}
           {createPaper.error && (
             <div className="form-error" role="alert">
               <p>

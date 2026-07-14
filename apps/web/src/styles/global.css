@@ -8,6 +8,7 @@
   }
   html {
     color-scheme: light;
+    overflow-x: hidden;
   }
   body {
     margin: 0;
@@ -250,6 +251,7 @@
   }
   .app-content {
     min-width: 0;
+    overflow-x: hidden;
     background: var(--paper);
   }
   .mobile-header {
@@ -984,6 +986,30 @@
   .modal-description {
     color: #70786f;
     font-size: 12px;
+  }
+  .modal-manual-switch {
+    margin-top: 12px;
+  }
+  .manual-entry-block {
+    margin-top: 22px;
+    padding-top: 18px;
+    border-top: 1px solid var(--line);
+  }
+  .manual-entry-block > header {
+    align-items: center;
+    gap: 12px;
+  }
+  .manual-entry-block > header > div {
+    display: grid;
+    gap: 3px;
+  }
+  .manual-entry-block > header strong {
+    color: var(--ink);
+    font-size: 12px;
+  }
+  .manual-entry-block > header span {
+    color: #7a827b;
+    font-size: 10px;
   }
   .form-field {
     display: grid;

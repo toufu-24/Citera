@@ -25,7 +25,7 @@ import {
 import { ApiError } from "../errors";
 import { dispatchOutboxJobs, jobOutboxStatement } from "../jobs";
 import { readUserPreferences } from "../preferences";
-import { resolveDoiMetadata } from "./metadata";
+import { resolveArxivMetadata, resolveDoiMetadata } from "./metadata";
 import type { AppBindings, JobMessage } from "../types";
 import { createId, decodeCursor, encodeCursor, nowUtcIso, parseJson } from "../utils";
 
@@ -45,11 +45,23 @@ const readingStatusSchema = z.enum(["unread", "reading", "read", "on_hold"]);
 type ReadingStatus = z.infer<typeof readingStatusSchema>;
 
 function readingStatusFromLegacy(status: z.infer<typeof PaperStatusSchema>): ReadingStatus {
-  return status === "reading" ? "reading" : status === "read" ? "read" : status === "archived" ? "on_hold" : "unread";
+  return status === "reading"
+    ? "reading"
+    : status === "read"
+      ? "read"
+      : status === "archived"
+        ? "on_hold"
+        : "unread";
 }
 
 function legacyStatusFromReading(status: ReadingStatus): z.infer<typeof PaperStatusSchema> {
-  return status === "reading" ? "reading" : status === "read" ? "read" : status === "on_hold" ? "archived" : "inbox";
+  return status === "reading"
+    ? "reading"
+    : status === "read"
+      ? "read"
+      : status === "on_hold"
+        ? "archived"
+        : "inbox";
 }
 
 const nullableText = (maximum: number) => z.string().trim().max(maximum).nullable().optional();
@@ -222,11 +234,13 @@ async function ensureIdentifiersAvailable(
     if (seen.has(key))
       throw new ApiError(422, "DUPLICATE_IDENTIFIER_INPUT", "An identifier was repeated.");
     seen.add(key);
-    const existing = await first<{
-      paper_id: string;
-      deleted_at: string | null;
-      version: number;
-    } & Record<string, unknown>>(
+    const existing = await first<
+      {
+        paper_id: string;
+        deleted_at: string | null;
+        version: number;
+      } & Record<string, unknown>
+    >(
       db,
       `SELECT pi.paper_id,p.deleted_at,p.version
        FROM paper_identifiers pi
@@ -344,13 +358,21 @@ const sortFields: Record<string, { expression: string; key: string }> = {
 export const papersRoutes = new Hono<AppBindings>();
 
 papersRoutes.get("/:paperId/bibtex", async (c) => {
-  const paper = paperFromRow(await requirePaper(c.env.DB, c.get("user").id, c.req.param("paperId")));
-  const identifiers = paper.identifiers as Array<{ identifierType?: string; normalizedValue?: string }>;
+  const paper = paperFromRow(
+    await requirePaper(c.env.DB, c.get("user").id, c.req.param("paperId")),
+  );
+  const identifiers = paper.identifiers as Array<{
+    identifierType?: string;
+    normalizedValue?: string;
+  }>;
   const authors = paper.authors as Array<{ displayName: string; orcid?: string | null }>;
   const exportPaper: ExportPaper = {
     id: String(paper.id),
     title: String(paper.title),
-    authors: authors.map((author) => ({ displayName: author.displayName, orcid: author.orcid ?? null })),
+    authors: authors.map((author) => ({
+      displayName: author.displayName,
+      orcid: author.orcid ?? null,
+    })),
     publicationYear: paper.publicationYear as number | null,
     publicationDate: paper.publicationDate as string | null,
     venue: paper.venue as string | null,
@@ -359,7 +381,9 @@ papersRoutes.get("/:paperId/bibtex", async (c) => {
     pages: paper.pages as string | null,
     publisher: paper.publisher as string | null,
     paperType: paper.paperType as string,
-    doi: identifiers.find((identifier) => identifier.identifierType === "doi")?.normalizedValue ?? null,
+    doi:
+      identifiers.find((identifier) => identifier.identifierType === "doi")?.normalizedValue ??
+      null,
     sourceUrl: paper.sourceUrl as string | null,
     abstract: paper.abstract as string | null,
     tags: (paper.tags as Array<{ name: string }>).map((tag) => tag.name),
@@ -535,58 +559,91 @@ papersRoutes.get("/", async (c) => {
 papersRoutes.post("/", async (c) => {
   const rawInput: unknown = await c.req.json();
   const userId = c.get("user").id;
-  const rawRecord = rawInput && typeof rawInput === "object" && !Array.isArray(rawInput)
-    ? (rawInput as Record<string, unknown>)
-    : {};
-  const rawIdentifiers: unknown[] = Array.isArray(rawRecord.identifiers) ? rawRecord.identifiers : [];
-  const identifierDoi = rawIdentifiers.find(
-    (identifier) => identifier && typeof identifier === "object" && (identifier as Record<string, unknown>).identifierType === "doi",
+  const rawRecord =
+    rawInput && typeof rawInput === "object" && !Array.isArray(rawInput)
+      ? (rawInput as Record<string, unknown>)
+      : {};
+  const rawIdentifiers: unknown[] = Array.isArray(rawRecord.identifiers)
+    ? rawRecord.identifiers
+    : [];
+  const identifierInput = rawIdentifiers.find(
+    (identifier) =>
+      identifier &&
+      typeof identifier === "object" &&
+      ((identifier as Record<string, unknown>).identifierType === "doi" ||
+        (identifier as Record<string, unknown>).identifierType === "arxiv"),
   );
-  let suppliedDoi: string | null = null;
-  if (typeof rawRecord.doi === "string") suppliedDoi = rawRecord.doi;
-  else if (identifierDoi && typeof identifierDoi === "object") {
-    const candidate = (identifierDoi as Record<string, unknown>).value;
-    if (typeof candidate === "string") suppliedDoi = candidate;
+  let suppliedIdentifier: { identifierType: "doi" | "arxiv"; value: string } | null = null;
+  if (typeof rawRecord.doi === "string") {
+    suppliedIdentifier = { identifierType: "doi", value: rawRecord.doi };
+  } else if (identifierInput && typeof identifierInput === "object") {
+    const record = identifierInput as Record<string, unknown>;
+    const identifierType = record.identifierType;
+    const value = record.value;
+    if ((identifierType === "doi" || identifierType === "arxiv") && typeof value === "string") {
+      suppliedIdentifier = { identifierType, value };
+    }
   }
   let normalizedRaw = rawRecord;
   if (typeof rawRecord.title !== "string" || !rawRecord.title.trim()) {
-    if (!suppliedDoi) throw new ApiError(422, "TITLE_REQUIRED", "A title or DOI is required.");
-    const metadata = await resolveDoiMetadata(c.env, suppliedDoi);
+    if (!suppliedIdentifier) {
+      throw new ApiError(422, "TITLE_REQUIRED", "A title, DOI, or arXiv ID is required.");
+    }
+    const metadata =
+      suppliedIdentifier.identifierType === "arxiv"
+        ? await resolveArxivMetadata(suppliedIdentifier.value)
+        : await resolveDoiMetadata(c.env, suppliedIdentifier.value);
     normalizedRaw = {
       ...rawRecord,
       title: metadata.title,
-      identifiers: rawIdentifiers.length ? rawIdentifiers : [{ identifierType: "doi", value: metadata.doi }],
-      authors: Array.isArray(rawRecord.authors) && rawRecord.authors.length > 0
-        ? rawRecord.authors
-        : metadata.authors,
-      publicationDate: typeof rawRecord.publicationDate === "string" && rawRecord.publicationDate
-        ? rawRecord.publicationDate
-        : metadata.publicationDate,
-      publicationYear: typeof rawRecord.publicationYear === "number"
-        ? rawRecord.publicationYear
-        : metadata.publicationYear,
-      venue: typeof rawRecord.venue === "string" && rawRecord.venue.trim()
-        ? rawRecord.venue
-        : metadata.venue,
-      volume: typeof rawRecord.volume === "string" && rawRecord.volume.trim()
-        ? rawRecord.volume
-        : metadata.volume,
-      issue: typeof rawRecord.issue === "string" && rawRecord.issue.trim()
-        ? rawRecord.issue
-        : metadata.issue,
-      pages: typeof rawRecord.pages === "string" && rawRecord.pages.trim()
-        ? rawRecord.pages
-        : metadata.pages,
-      publisher: typeof rawRecord.publisher === "string" && rawRecord.publisher.trim()
-        ? rawRecord.publisher
-        : metadata.publisher,
-      language: typeof rawRecord.language === "string" && rawRecord.language.trim()
-        ? rawRecord.language
-        : metadata.language,
+      identifiers: rawIdentifiers.length
+        ? rawIdentifiers
+        : [{ identifierType: suppliedIdentifier.identifierType, value: suppliedIdentifier.value }],
+      authors:
+        Array.isArray(rawRecord.authors) && rawRecord.authors.length > 0
+          ? rawRecord.authors
+          : metadata.authors,
+      abstract:
+        typeof rawRecord.abstract === "string" && rawRecord.abstract.trim()
+          ? rawRecord.abstract
+          : metadata.abstract,
+      publicationDate:
+        typeof rawRecord.publicationDate === "string" && rawRecord.publicationDate
+          ? rawRecord.publicationDate
+          : metadata.publicationDate,
+      publicationYear:
+        typeof rawRecord.publicationYear === "number"
+          ? rawRecord.publicationYear
+          : metadata.publicationYear,
+      venue:
+        typeof rawRecord.venue === "string" && rawRecord.venue.trim()
+          ? rawRecord.venue
+          : metadata.venue,
+      volume:
+        typeof rawRecord.volume === "string" && rawRecord.volume.trim()
+          ? rawRecord.volume
+          : metadata.volume,
+      issue:
+        typeof rawRecord.issue === "string" && rawRecord.issue.trim()
+          ? rawRecord.issue
+          : metadata.issue,
+      pages:
+        typeof rawRecord.pages === "string" && rawRecord.pages.trim()
+          ? rawRecord.pages
+          : metadata.pages,
+      publisher:
+        typeof rawRecord.publisher === "string" && rawRecord.publisher.trim()
+          ? rawRecord.publisher
+          : metadata.publisher,
+      language:
+        typeof rawRecord.language === "string" && rawRecord.language.trim()
+          ? rawRecord.language
+          : metadata.language,
       paperType: rawRecord.paperType ?? metadata.paperType,
-      sourceUrl: typeof rawRecord.sourceUrl === "string" && rawRecord.sourceUrl.trim()
-        ? rawRecord.sourceUrl
-        : metadata.url,
+      sourceUrl:
+        typeof rawRecord.sourceUrl === "string" && rawRecord.sourceUrl.trim()
+          ? rawRecord.sourceUrl
+          : metadata.url,
     };
   }
   const parsedInput = createPaperSchema.parse(normalizedRaw);
@@ -604,7 +661,7 @@ papersRoutes.post("/", async (c) => {
         ? legacyStatusFromReading(requestedReadingStatus)
         : preferences.defaultStatus,
     readingStatus: Object.hasOwn(suppliedFields, "readingStatus")
-      ? requestedReadingStatus ?? readingStatusFromLegacy(parsedInput.status)
+      ? (requestedReadingStatus ?? readingStatusFromLegacy(parsedInput.status))
       : readingStatusFromLegacy(
           Object.hasOwn(suppliedFields, "status") ? parsedInput.status : preferences.defaultStatus,
         ),
@@ -666,7 +723,7 @@ papersRoutes.post("/", async (c) => {
         language,paper_type,status,reading_status,priority,rating,read_progress,source_url,metadata_state,search_text,
         note_markdown,version,last_opened_at,created_at,updated_at,deleted_at
       ) VALUES (
-        ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+        ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
       )`,
     ).bind(
       id,
@@ -839,7 +896,8 @@ papersRoutes.patch("/:paperId", async (c) => {
   const assignments: string[] = [];
   const values: unknown[] = [];
   if ("readingStatus" in input || "status" in input) {
-    const nextReadingStatus = input.readingStatus ?? readingStatusFromLegacy(input.status ?? "inbox");
+    const nextReadingStatus =
+      input.readingStatus ?? readingStatusFromLegacy(input.status ?? "inbox");
     const nextLegacyStatus = input.status ?? legacyStatusFromReading(nextReadingStatus);
     assignments.push("status = ?", "reading_status = ?");
     values.push(nextLegacyStatus, nextReadingStatus);
@@ -949,7 +1007,15 @@ papersRoutes.patch("/:paperId", async (c) => {
         `INSERT INTO metadata_values
           (id,user_id,paper_id,field_name,value_json,source_type,source_reference,confidence,selected,created_at,updated_at)
          VALUES (?,?,?,?,?,'user',NULL,1,1,?,?)`,
-      ).bind(createId("mdv"), userId, paperId, "noteMarkdown", JSON.stringify(input.noteMarkdown), now, now),
+      ).bind(
+        createId("mdv"),
+        userId,
+        paperId,
+        "noteMarkdown",
+        JSON.stringify(input.noteMarkdown),
+        now,
+        now,
+      ),
     );
   }
   const updatedSnapshot = {
@@ -1020,12 +1086,14 @@ papersRoutes.post("/:paperId/restore", async (c) => {
   }
   if (!existing.deleted_at)
     return c.json(paperFromRow(existing), 200, { ETag: `"${expectedVersion}"` });
-  const conflictingIdentifier = await first<{
-    paper_id: string;
-    identifier_type: string;
-    normalized_value: string;
-    version: number;
-  } & Record<string, unknown>>(
+  const conflictingIdentifier = await first<
+    {
+      paper_id: string;
+      identifier_type: string;
+      normalized_value: string;
+      version: number;
+    } & Record<string, unknown>
+  >(
     c.env.DB,
     `SELECT active.paper_id,active.identifier_type,active.normalized_value,activePaper.version
      FROM paper_identifiers trashed
@@ -1115,6 +1183,130 @@ papersRoutes.post("/:paperId/refresh-metadata", async (c) => {
   ]);
   c.executionCtx.waitUntil(dispatchOutboxJobs(c.env, [job]));
   return c.json({ jobId: job.jobId, state: "queued" }, 202);
+});
+
+papersRoutes.post("/:paperId/fetch-pdf", async (c) => {
+  const userId = c.get("user").id;
+  const paperId = c.req.param("paperId");
+  const paper = await requirePaper(c.env.DB, userId, paperId);
+  if (paper.deleted_at)
+    throw new ApiError(409, "PAPER_DELETED", "Deleted papers cannot fetch a PDF.");
+  const existingFile = await first<{ id: string } & Record<string, unknown>>(
+    c.env.DB,
+    `SELECT id FROM files
+     WHERE user_id=? AND paper_id=? AND kind='original_pdf' AND upload_state='verified' AND deleted_at IS NULL
+     LIMIT 1`,
+    userId,
+    paperId,
+  );
+  if (existingFile) return c.json({ state: "already_verified", fileId: existingFile.id });
+  const identifiers = await all<
+    { identifier_type: string; normalized_value: string } & Record<string, unknown>
+  >(
+    c.env.DB,
+    `SELECT identifier_type,normalized_value FROM paper_identifiers
+     WHERE user_id=? AND paper_id=? AND identifier_type='arxiv' AND deleted_at IS NULL
+     UNION ALL
+     SELECT identifier_type,normalized_value FROM paper_identifiers
+     WHERE user_id=? AND paper_id=? AND identifier_type='doi' AND deleted_at IS NULL`,
+    userId,
+    paperId,
+    userId,
+    paperId,
+  );
+  const arxivId = identifiers.find(
+    (identifier) => identifier.identifier_type === "arxiv",
+  )?.normalized_value;
+  const doi = identifiers.find(
+    (identifier) => identifier.identifier_type === "doi",
+  )?.normalized_value;
+  const storedPdfUrls = await all<{ value_json: string } & Record<string, unknown>>(
+    c.env.DB,
+    `SELECT value_json FROM metadata_values
+     WHERE user_id=? AND paper_id=? AND field_name='pdfUrl' AND source_type IN ('arxiv','crossref')
+     ORDER BY updated_at DESC`,
+    userId,
+    paperId,
+  );
+  const pdfUrls = [
+    ...(arxivId ? [`https://arxiv.org/pdf/${arxivId}`] : []),
+    ...storedPdfUrls.flatMap((row) => {
+      const value = parseJson(row.value_json, null);
+      return typeof value === "string" ? [value] : [];
+    }),
+    ...(doi ? [`https://doi.org/${doi}`] : []),
+  ];
+  if (!pdfUrls.length) {
+    throw new ApiError(
+      409,
+      "PDF_AUTO_FETCH_UNAVAILABLE",
+      "この論文には自動取得できる識別子がありません。PDFを手動で追加してください。",
+    );
+  }
+  const job: JobMessage = {
+    jobId: createId("job"),
+    type: "pdf.download",
+    userId,
+    paperId,
+    pdfUrls: [...new Set(pdfUrls)].slice(0, 10),
+    // A new generation lets the button retry a previous failed download without changing paper metadata.
+    sourceVersion: Date.now(),
+    attempt: 1,
+  };
+  await c.env.DB.batch([jobOutboxStatement(c.env.DB, job)]);
+  c.executionCtx.waitUntil(dispatchOutboxJobs(c.env, [job]));
+  return c.json({ jobId: job.jobId, state: "queued" }, 202);
+});
+
+papersRoutes.get("/:paperId/fetch-pdf/:jobId", async (c) => {
+  const userId = c.get("user").id;
+  const paperId = c.req.param("paperId");
+  const jobId = c.req.param("jobId");
+  await requirePaper(c.env.DB, userId, paperId);
+  const run = await first<
+    {
+      state: "running" | "retrying" | "complete" | "failed";
+      error_code: string | null;
+      error_message: string | null;
+    } & Record<string, unknown>
+  >(
+    c.env.DB,
+    `SELECT state,error_code,error_message FROM job_runs
+     WHERE job_id=? AND user_id=? AND paper_id=? AND type='pdf.download'
+     LIMIT 1`,
+    jobId,
+    userId,
+    paperId,
+  );
+  if (run) {
+    return c.json({
+      state: run.state,
+      errorCode: run.error_code,
+      errorMessage: run.error_message,
+    });
+  }
+  const outbox = await first<
+    { state: "pending" | "dispatched" | "failed"; last_error: string | null } & Record<
+      string,
+      unknown
+    >
+  >(
+    c.env.DB,
+    `SELECT state,last_error FROM job_outbox
+     WHERE json_extract(job_json,'$.jobId')=?
+       AND json_extract(job_json,'$.userId')=?
+       AND json_extract(job_json,'$.paperId')=?
+       AND json_extract(job_json,'$.type')='pdf.download'
+     LIMIT 1`,
+    jobId,
+    userId,
+    paperId,
+  );
+  return c.json({
+    state: outbox?.state === "failed" ? "failed" : "queued",
+    errorCode: outbox?.state === "failed" ? "QUEUE_DISPATCH_FAILED" : null,
+    errorMessage: outbox?.state === "failed" ? outbox.last_error : null,
+  });
 });
 
 papersRoutes.get("/:paperId/duplicate-candidates", async (c) => {

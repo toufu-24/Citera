@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "wrangler deploy --dry-run --env=\"\" --outdir dist --config wrangler.jsonc",
-    "dev": "wrangler dev --env=\"\" --port 8790 --config wrangler.jsonc",
+    "dev": "wrangler dev --env=\"\" --port 8790 --inspector-port 9230 --config wrangler.jsonc --persist-to ../../.wrangler/state",
     "deploy": "wrangler deploy --config wrangler.jsonc",
     "deploy:production": "wrangler deploy --env production --config wrangler.jsonc",
     "lint": "eslint src --max-warnings 0",

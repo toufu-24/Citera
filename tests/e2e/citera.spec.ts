@@ -52,7 +52,8 @@ test("owner can add, upload, read, annotate, search, and export a paper", async 
 
   await page.getByRole("button", { name: "論文を追加" }).first().click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByLabel("タイトル（DOI入力時は自動取得）").fill(title);
+  await dialog.getByRole("button", { name: "DOIがない場合は手入力" }).click();
+  await dialog.getByLabel("タイトル").fill(title);
   await dialog.getByLabel("著者").fill("Ada Lovelace, Alan Turing");
   await dialog.getByLabel("出版年").fill("2026");
   await dialog.getByLabel("掲載誌・会議").fill("Citera Research Notes");
@@ -87,9 +88,7 @@ test("owner can add, upload, read, annotate, search, and export a paper", async 
         page.locator(".pdf-stage").evaluate((stage) => stage.scrollWidth <= stage.clientWidth + 1),
       )
       .toBeTruthy();
-    expect(
-      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
-    ).toBeTruthy();
+    expect(await page.evaluate(() => document.body.scrollWidth <= window.innerWidth)).toBeTruthy();
   }
 
   await expect(page.locator(".pdf-page-shell")).toHaveCount(8);
@@ -110,6 +109,7 @@ test("owner can add, upload, read, annotate, search, and export a paper", async 
   await page.getByLabel("一言要約").fill("再現実験の設計と評価方法を確認する論文");
   await page.getByRole("button", { name: "保存" }).click();
 
+  await page.getByRole("button", { name: "論文詳細を閉じる" }).last().click();
   await page.getByRole("link", { name: "ライブラリ" }).first().click();
   await page.getByLabel("論文を検索").fill(title);
   await expect(page.getByRole("link", { name: title })).toBeVisible();

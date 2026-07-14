@@ -36,6 +36,18 @@ function firstText(value: unknown): string | undefined {
   return text(value);
 }
 
+function crossrefPdfUrl(record: Record<string, unknown>): string | undefined {
+  if (!Array.isArray(record.link)) return undefined;
+  for (const item of record.link) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const link = item as Record<string, unknown>;
+    const url = text(link.URL);
+    const contentType = text(link["content-type"])?.toLowerCase();
+    if (url && (contentType === "application/pdf" || /\.pdf(?:$|[?#])/iu.test(url))) return url;
+  }
+  return undefined;
+}
+
 function yearFromParts(value: unknown): number | undefined {
   if (!Array.isArray(value)) return undefined;
   const firstPart: unknown = value[0];
@@ -96,6 +108,7 @@ function crossrefCandidate(raw: unknown, doi: string): MetadataCandidate | null 
   const publisher = text(record.publisher);
   const language = text(record.language);
   const url = text(record.URL);
+  const pdfUrl = crossrefPdfUrl(record);
   const metadata: BibliographicMetadata = {
     title,
     doi,
@@ -110,6 +123,7 @@ function crossrefCandidate(raw: unknown, doi: string): MetadataCandidate | null 
     ...(publisher ? { publisher } : {}),
     ...(language ? { language } : {}),
     ...(url ? { url } : {}),
+    ...(pdfUrl ? { pdfUrl } : {}),
     paperType:
       record.type === "proceedings-article"
         ? "paper-conference"
@@ -493,11 +507,50 @@ export async function enrichPaper(env: Env, job: JobMessage): Promise<JobResult>
     throw error;
   }
   await rebuildSearchIndex(env, { ...job, sourceVersion: nextVersion });
+  const automaticPdfUrls = [
+    ...candidates.filter((candidate) => candidate.source === "arxiv"),
+    ...candidates.filter((candidate) => candidate.source === "crossref"),
+  ]
+    .map((candidate) => candidate.metadata.pdfUrl)
+    .filter((url): url is string => typeof url === "string" && url.length > 0);
+  if (doi) automaticPdfUrls.push(`https://doi.org/${doi}`);
+  const uniquePdfUrls = [...new Set(automaticPdfUrls)];
+  let pdfDownloadQueued = false;
+  if (uniquePdfUrls.length > 0) {
+    const existingPdf = await first<Row>(
+      env.DB,
+      `SELECT id FROM files
+       WHERE user_id=? AND paper_id=? AND kind='original_pdf' AND upload_state='verified' AND deleted_at IS NULL
+       LIMIT 1`,
+      job.userId,
+      job.paperId,
+    );
+    if (!existingPdf) {
+      try {
+        await env.JOBS.send({
+          jobId: createId("job"),
+          type: "pdf.download",
+          userId: job.userId,
+          paperId: job.paperId,
+          pdfUrls: uniquePdfUrls,
+          sourceVersion: nextVersion,
+          attempt: 1,
+        });
+        pdfDownloadQueued = true;
+      } catch (error) {
+        console.error("Could not enqueue automatic arXiv PDF download", {
+          paperId: job.paperId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
   return {
     metadataState: merged.metadataState,
     providers: candidates
       .filter((candidate) => candidate.source === "crossref" || candidate.source === "arxiv")
       .map((candidate) => candidate.source),
+    pdfDownloadQueued,
     version: nextVersion,
   };
 }

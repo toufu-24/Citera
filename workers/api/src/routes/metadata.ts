@@ -1,13 +1,15 @@
-import { normalizeDoi } from "@citera/domain";
+import { normalizeArxivId, normalizeDoi } from "@citera/domain";
 import { Hono } from "hono";
 import { z } from "zod";
 import { ApiError } from "../errors";
 import type { AppBindings } from "../types";
 import { nowUtcIso } from "../utils";
 
-export interface ResolvedDoiMetadata {
-  doi: string;
+export interface ResolvedMetadata {
+  doi?: string;
+  arxivId?: string;
   title: string;
+  abstract: string | null;
   authors: Array<{ displayName: string; givenName?: string; familyName?: string }>;
   publicationDate: string | null;
   publicationYear: number | null;
@@ -18,8 +20,11 @@ export interface ResolvedDoiMetadata {
   publisher: string | null;
   language: string | null;
   url: string | null;
-  paperType: "article-journal" | "paper-conference" | "book";
+  paperType: "article-journal" | "paper-conference" | "book" | "preprint";
 }
+
+export type ResolvedDoiMetadata = ResolvedMetadata & { doi: string };
+export type ResolvedArxivMetadata = ResolvedMetadata & { arxivId: string };
 
 function text(value: unknown): string | null {
   if (typeof value === "string" && value.trim()) return value.trim();
@@ -85,6 +90,7 @@ function parseCrossref(raw: unknown, doi: string): ResolvedDoiMetadata | null {
   return {
     doi,
     title,
+    abstract: text(record.abstract),
     authors,
     publicationDate,
     publicationYear: published?.[0] ?? null,
@@ -96,6 +102,54 @@ function parseCrossref(raw: unknown, doi: string): ResolvedDoiMetadata | null {
     language: text(record.language),
     url: text(record.URL) ?? `https://doi.org/${doi}`,
     paperType: type,
+  };
+}
+
+function decodeXml(value: string): string {
+  return value
+    .replaceAll("&amp;", "&")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&#39;", "'")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function xmlTag(xml: string, tag: string): string | undefined {
+  const match = new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}>`, "iu").exec(xml);
+  return match?.[1] ? decodeXml(match[1]) : undefined;
+}
+
+function parseArxiv(raw: string, arxivId: string): ResolvedArxivMetadata | null {
+  const entry = /<entry>([\s\S]*?)<\/entry>/iu.exec(raw)?.[1];
+  if (!entry) return null;
+  const title = xmlTag(entry, "title");
+  if (!title) return null;
+  const authors = [...entry.matchAll(/<author>([\s\S]*?)<\/author>/giu)].flatMap((match) => {
+    const displayName = xmlTag(match[1] ?? "", "name");
+    return displayName ? [{ displayName }] : [];
+  });
+  const published = xmlTag(entry, "published");
+  const journal = xmlTag(entry, "arxiv:journal_ref");
+  const doi = xmlTag(entry, "arxiv:doi");
+  const abstract = xmlTag(entry, "summary");
+  return {
+    arxivId,
+    ...(doi ? { doi } : {}),
+    title,
+    abstract: abstract ?? null,
+    authors,
+    publicationDate: published?.slice(0, 10) ?? null,
+    publicationYear: published ? Number(published.slice(0, 4)) : null,
+    venue: journal ?? null,
+    volume: null,
+    issue: null,
+    pages: null,
+    publisher: null,
+    language: null,
+    url: `https://arxiv.org/abs/${arxivId}`,
+    paperType: "preprint",
   };
 }
 
@@ -124,6 +178,34 @@ export async function resolveDoiMetadata(
   }
   const metadata = parseCrossref(raw, doi);
   if (!metadata) throw new ApiError(502, "METADATA_FETCH_FAILED", "The metadata provider returned incomplete data.");
+  return metadata;
+}
+
+export async function resolveArxivMetadata(
+  rawArxivId: string,
+): Promise<ResolvedArxivMetadata> {
+  const arxivId = normalizeArxivId(rawArxivId);
+  if (!arxivId) throw new ApiError(422, "ARXIV_INVALID", "The arXiv ID is invalid.");
+  let response: Response;
+  try {
+    response = await fetch(
+      `https://export.arxiv.org/api/query?id_list=${encodeURIComponent(arxivId)}`,
+      {
+        headers: { Accept: "application/atom+xml", "User-Agent": "Citera/0.1" },
+        signal: AbortSignal.timeout(8_000),
+      },
+    );
+  } catch {
+    throw new ApiError(502, "METADATA_FETCH_FAILED", "Bibliographic metadata could not be fetched.");
+  }
+  if (response.status === 404) {
+    throw new ApiError(404, "ARXIV_NOT_FOUND", "The arXiv ID was not found.");
+  }
+  if (!response.ok) {
+    throw new ApiError(502, "METADATA_FETCH_FAILED", "Bibliographic metadata could not be fetched.");
+  }
+  const metadata = parseArxiv(await response.text(), arxivId);
+  if (!metadata) throw new ApiError(404, "ARXIV_NOT_FOUND", "The arXiv ID was not found.");
   return metadata;
 }
 

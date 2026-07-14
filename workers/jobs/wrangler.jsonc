@@ -50,6 +50,8 @@
     "PENDING_UPLOAD_TTL_SECONDS": "86400",
     "METADATA_CACHE_SECONDS": "604800",
     "CROSSREF_MAILTO": "",
+    "MAX_PDF_BYTES": "104857600",
+    "MAX_USER_STORAGE_BYTES": "5368709120",
   },
   "env": {
     "production": {
@@ -93,6 +95,8 @@
         "PENDING_UPLOAD_TTL_SECONDS": "86400",
         "METADATA_CACHE_SECONDS": "604800",
         "CROSSREF_MAILTO": "",
+        "MAX_PDF_BYTES": "104857600",
+        "MAX_USER_STORAGE_BYTES": "5368709120",
       },
     },
   },

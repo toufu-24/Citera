@@ -10,10 +10,10 @@
     "node": ">=24.0.0 <25"
   },
   "scripts": {
-    "dev": "pnpm --filter @citera/web build && turbo run dev --parallel --filter=@citera/web --filter=@citera/api",
+    "dev": "pnpm --filter @citera/web build && turbo run dev --parallel --filter=@citera/web --filter=@citera/api --filter=@citera/jobs",
     "dev:web": "pnpm --filter @citera/web dev",
     "dev:api": "pnpm --filter @citera/web build && pnpm --filter @citera/api dev",
-    "dev:api:e2e": "pnpm --filter @citera/api exec -- wrangler dev --env=\"\" --config ../../wrangler.jsonc --env-file ../../tests/e2e/wrangler.env --persist-to ../../.wrangler/e2e-state --port 8787",
+    "dev:api:e2e": "cd workers/api/../.. && pnpm exec wrangler dev --env=\"\" --config wrangler.jsonc --env-file tests/e2e/wrangler.env --persist-to .wrangler/e2e-state --port 8787",
     "dev:extension": "pnpm --filter @citera/extension dev",
     "dev:jobs": "pnpm --filter @citera/jobs dev",
     "dev:web:e2e": "pnpm --filter @citera/web exec -- vite --host 127.0.0.1 --port 5173",

@@ -1,5 +1,6 @@
 export type JobType =
   | "paper.enrich"
+  | "pdf.download"
   | "pdf.verify"
   | "pdf.extract"
   | "search.reindex"
@@ -15,6 +16,8 @@ export interface JobMessage {
   paperId?: string;
   fileId?: string;
   exportId?: string;
+  pdfUrl?: string;
+  pdfUrls?: string[];
   sourceVersion: number;
   attempt: number;
 }

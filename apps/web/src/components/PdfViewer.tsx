@@ -420,6 +420,33 @@ export function PdfViewer({
     });
   }
 
+  function updatePageFromScroll() {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const stageRect = stage.getBoundingClientRect();
+    let mostVisiblePage = currentPageRef.current;
+    let largestArea = 0;
+
+    for (const [pageNumber, element] of pageElementsRef.current) {
+      const rect = element.getBoundingClientRect();
+      const visibleWidth = Math.max(
+        0,
+        Math.min(rect.right, stageRect.right) - Math.max(rect.left, stageRect.left),
+      );
+      const visibleHeight = Math.max(
+        0,
+        Math.min(rect.bottom, stageRect.bottom) - Math.max(rect.top, stageRect.top),
+      );
+      const area = visibleWidth * visibleHeight;
+      if (area > largestArea) {
+        mostVisiblePage = pageNumber;
+        largestArea = area;
+      }
+    }
+
+    if (mostVisiblePage !== currentPageRef.current) setPage(mostVisiblePage);
+  }
+
   function handleZoomWheel(event: React.WheelEvent<HTMLDivElement>) {
     if (!event.ctrlKey && !event.metaKey) return;
     event.preventDefault();
@@ -724,6 +751,7 @@ export function PdfViewer({
         className="pdf-stage"
         tabIndex={0}
         aria-label="PDF表示領域"
+        onScroll={updatePageFromScroll}
         onWheel={handleZoomWheel}
       >
         {error ? (
