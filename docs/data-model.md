@@ -61,7 +61,7 @@ erDiagram
 | `authorization_codes`               | extension one-time auth code/PKCE                | primary `code_hash`, expires/used                                                                                |
 | `papers`                            | selected bibliography and workflow               | user+created/updated/year/status indexes, rating check, soft delete, version                                     |
 | `libraries` / `library_members`     | personal library and future shared-library boundary | personal owner membership is created on first login; member status/role checks                                  |
-| `paper_identifiers`                 | DOI/arXiv/etc                                    | unique(user, type, normalized), type check                                                                       |
+| `paper_identifiers`                 | DOI/arXiv/etc                                    | active rows only are unique(user, type, normalized); trashed paper identifiers keep `deleted_at` for restore       |
 | `authors`                           | user-scoped author identity                      | unique(user, normalized_name, coalesced ORCID), name index                                                       |
 | `paper_authors`                     | ordered authorship                               | PK(paper,author,role), unique paper+role+position, user+paper index                                              |
 | `metadata_values`                   | provenance/confidence candidates                 | user+paper+field index, confidence check                                                                         |

@@ -41,6 +41,19 @@ function dateParts(value: unknown): [number, number?, number?] | null {
   return result;
 }
 
+function publishedDate(record: Record<string, unknown>): [number, number?, number?] | null {
+  for (const key of ["published", "published-print", "published-online", "issued", "created"]) {
+    const candidate = record[key];
+    const parts = dateParts(
+      candidate && typeof candidate === "object" && !Array.isArray(candidate)
+        ? (candidate as { "date-parts"?: unknown })["date-parts"]
+        : null,
+    );
+    if (parts) return parts;
+  }
+  return null;
+}
+
 function parseCrossref(raw: unknown, doi: string): ResolvedDoiMetadata | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const message = (raw as { message?: unknown }).message;
@@ -64,9 +77,7 @@ function parseCrossref(raw: unknown, doi: string): ResolvedDoiMetadata | null {
           : [];
       })
     : [];
-  const published = dateParts(
-    (record.published as { "date-parts"?: unknown } | undefined)?.["date-parts"],
-  );
+  const published = publishedDate(record);
   const publicationDate = published?.[1] != null && published?.[2] != null
     ? `${published[0]}-${String(published[1]).padStart(2, "0")}-${String(published[2]).padStart(2, "0")}`
     : null;

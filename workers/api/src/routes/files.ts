@@ -366,7 +366,8 @@ ingestionsRoutes.post("/", async (c) => {
         c.env.DB,
         `SELECT pi.paper_id,p.title FROM paper_identifiers pi
            JOIN papers p ON p.id=pi.paper_id AND p.user_id=pi.user_id
-           WHERE pi.user_id=? AND pi.identifier_type=? AND pi.normalized_value=? AND p.deleted_at IS NULL`,
+           WHERE pi.user_id=? AND pi.identifier_type=? AND pi.normalized_value=?
+             AND pi.deleted_at IS NULL AND p.deleted_at IS NULL`,
         userId,
         identifier.identifierType,
         identifier.normalizedValue,

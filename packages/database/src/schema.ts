@@ -233,13 +233,12 @@ export const paperIdentifiers = sqliteTable(
     originalValue: text("original_value").notNull(),
     version: text("identifier_version"),
     createdAt: text("created_at").notNull(),
+    deletedAt: text("deleted_at"),
   },
   (table) => [
-    uniqueIndex("paper_identifiers_user_type_value_uq").on(
-      table.userId,
-      table.identifierType,
-      table.normalizedValue,
-    ),
+    uniqueIndex("paper_identifiers_active_user_type_value_uq")
+      .on(table.userId, table.identifierType, table.normalizedValue)
+      .where(sql`${table.deletedAt} is null`),
     index("paper_identifiers_paper_idx").on(table.userId, table.paperId),
   ],
 );

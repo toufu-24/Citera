@@ -302,6 +302,41 @@ describe("Citera Workers API", () => {
     expect(privateResponse.status).toBe(404);
     const bobList = await request("/v1/papers", {}, bob.cookie);
     await expect(bobList.json()).resolves.toMatchObject({ items: [] });
+
+    const deleteResponse = await request(
+      `/v1/papers/${paper.id}`,
+      { method: "DELETE", headers: { "If-Match": '"2"' } },
+      aliceCookie,
+    );
+    expect(deleteResponse.status).toBe(204);
+
+    const reRegisteredResponse = await request(
+      "/v1/papers",
+      {
+        method: "POST",
+        json: {
+          title: "Re-registered after trash",
+          identifiers: [{ identifierType: "doi", value: "10.5555/citera.2026.1" }],
+          authors: [],
+          tagIds: [],
+          collectionIds: [],
+        },
+      },
+      aliceCookie,
+    );
+    expect(reRegisteredResponse.status).toBe(201);
+    const reRegisteredPaper = await jsonBody(reRegisteredResponse);
+    expect(reRegisteredPaper.id).not.toBe(paper.id);
+
+    const restoreResponse = await request(
+      `/v1/papers/${paper.id}/restore`,
+      { method: "POST", headers: { "If-Match": '"3"' } },
+      aliceCookie,
+    );
+    expect(restoreResponse.status).toBe(409);
+    await expect(restoreResponse.json()).resolves.toMatchObject({
+      error: { code: "DUPLICATE_IDENTIFIER" },
+    });
   });
 
   it("rejects unauthenticated access with the stable error envelope", async () => {

@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
-import { api, type PaperListItem } from "../lib/api";
+import { ApiRequestError, api, type PaperListItem } from "../lib/api";
 import { db } from "../lib/database";
 
 type StatusFilter = "all" | PaperListItem["status"] | "deleted";
@@ -53,6 +53,24 @@ function formatDate(value: string) {
 function formString(form: FormData, name: string): string {
   const value = form.get(name);
   return typeof value === "string" ? value : "";
+}
+
+function duplicateDetailsFromError(error: unknown): {
+  paperId: string;
+  deletedAt: string | null;
+  version: number | null;
+} | null {
+  if (!(error instanceof ApiRequestError) || error.code !== "DUPLICATE_IDENTIFIER") return null;
+  if (!error.details || typeof error.details !== "object" || Array.isArray(error.details)) {
+    return null;
+  }
+  const details = error.details as { paperId?: unknown; deletedAt?: unknown; version?: unknown };
+  if (typeof details.paperId !== "string") return null;
+  return {
+    paperId: details.paperId,
+    deletedAt: typeof details.deletedAt === "string" ? details.deletedAt : null,
+    version: typeof details.version === "number" ? details.version : null,
+  };
 }
 
 function PaperRow({
@@ -189,6 +207,20 @@ export function LibraryPage() {
     },
   });
 
+  const duplicateDetails = duplicateDetailsFromError(createPaper.error);
+  const restoreDuplicate = useMutation({
+    mutationFn: () => {
+      if (!duplicateDetails || duplicateDetails.version === null) {
+        throw new Error("The duplicate paper version is unavailable.");
+      }
+      return api.restorePaper(duplicateDetails.paperId, duplicateDetails.version);
+    },
+    onSuccess: async () => {
+      createDialog.current?.close();
+      await queryClient.invalidateQueries({ queryKey: ["papers"] });
+    },
+  });
+
   const bulkStatus = useMutation({
     mutationFn: async (nextStatus: PaperListItem["status"]) => {
       const byId = new Map(items.map((paper) => [paper.id, paper]));
@@ -286,20 +318,25 @@ export function LibraryPage() {
       ? "doi"
       : "arxiv";
     const selectedStatus = formString(form, "status");
-    createPaper.mutate({
-      title: formString(form, "title"),
-      authors: formString(form, "authors")
+    const title = formString(form, "title").trim();
+    const authors = formString(form, "authors")
         .split(",")
         .map((value) => value.trim())
         .filter(Boolean)
-        .map((displayName) => ({ displayName })),
-      publicationYear: year ? Number(year) : null,
-      venue: formString(form, "venue") || null,
+        .map((displayName) => ({ displayName }));
+    const venue = formString(form, "venue").trim();
+    const sourceUrl = formString(form, "sourceUrl").trim();
+    const body: Record<string, unknown> = {
       identifiers: identifier ? [{ identifierType, value: identifier }] : [],
-      sourceUrl: formString(form, "sourceUrl") || null,
-      ...(selectedStatus ? { status: selectedStatus } : {}),
       clientMutationId: crypto.randomUUID(),
-    });
+    };
+    if (title) body.title = title;
+    if (authors.length) body.authors = authors;
+    if (year) body.publicationYear = Number(year);
+    if (venue) body.venue = venue;
+    if (sourceUrl) body.sourceUrl = sourceUrl;
+    if (selectedStatus) body.status = selectedStatus;
+    createPaper.mutate(body);
   }
 
   return (
@@ -671,9 +708,33 @@ export function LibraryPage() {
             <input name="sourceUrl" type="url" placeholder="https://…" />
           </label>
           {createPaper.error && (
-            <p className="form-error" role="alert">
-              保存できませんでした。入力内容と接続を確認してください。
-            </p>
+            <div className="form-error" role="alert">
+              <p>
+                {createPaper.error instanceof ApiRequestError
+                  ? createPaper.error.message
+                  : "保存できませんでした。入力内容と接続を確認してください。"}
+              </p>
+              {duplicateDetails && (
+                duplicateDetails.deletedAt && duplicateDetails.version !== null ? (
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={() => restoreDuplicate.mutate()}
+                    disabled={restoreDuplicate.isPending}
+                  >
+                    {restoreDuplicate.isPending ? "復元中…" : "ゴミ箱から復元"}
+                  </button>
+                ) : (
+                  <Link
+                    to="/papers/$paperId"
+                    params={{ paperId: duplicateDetails.paperId }}
+                    onClick={() => createDialog.current?.close()}
+                  >
+                    登録済みの論文を開く
+                  </Link>
+                )
+              )}
+            </div>
           )}
           <footer>
             <button

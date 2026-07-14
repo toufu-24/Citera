@@ -83,20 +83,78 @@ async function applyPaperMutation(
   let result: D1Result;
   if (mutation.operation === "delete") {
     operation = "delete";
-    result = await db
-      .prepare(
-        "UPDATE papers SET deleted_at=?,updated_at=?,version=? WHERE id=? AND user_id=? AND version=?",
-      )
-      .bind(now, now, nextVersion, mutation.entityId, userId, currentVersion)
-      .run();
+    const results = await db.batch([
+      db
+        .prepare(
+          "UPDATE papers SET deleted_at=?,updated_at=?,version=? WHERE id=? AND user_id=? AND version=?",
+        )
+        .bind(now, now, nextVersion, mutation.entityId, userId, currentVersion),
+      db
+        .prepare("UPDATE paper_identifiers SET deleted_at=? WHERE user_id=? AND paper_id=?")
+        .bind(now, userId, mutation.entityId),
+    ]);
+    const paperResult = results[0];
+    if (!paperResult) {
+      return {
+        clientMutationId: mutation.clientMutationId,
+        status: "conflict",
+        entityId: mutation.entityId,
+        error: { code: "VERSION_CONFLICT", message: "The paper was changed by another client." },
+      };
+    }
+    result = paperResult;
   } else if (mutation.operation === "restore") {
     operation = "restore";
-    result = await db
-      .prepare(
-        "UPDATE papers SET deleted_at=NULL,updated_at=?,version=? WHERE id=? AND user_id=? AND version=?",
-      )
-      .bind(now, nextVersion, mutation.entityId, userId, currentVersion)
-      .run();
+    const conflictingIdentifier = await first<Record<string, unknown>>(
+      db,
+      `SELECT active.paper_id,active.identifier_type,active.normalized_value
+       FROM paper_identifiers trashed
+       JOIN paper_identifiers active
+         ON active.user_id=trashed.user_id
+        AND active.identifier_type=trashed.identifier_type
+        AND active.normalized_value=trashed.normalized_value
+        AND active.paper_id<>trashed.paper_id
+        AND active.deleted_at IS NULL
+       JOIN papers activePaper
+         ON activePaper.id=active.paper_id
+        AND activePaper.user_id=active.user_id
+        AND activePaper.deleted_at IS NULL
+       WHERE trashed.user_id=? AND trashed.paper_id=?
+       LIMIT 1`,
+      userId,
+      mutation.entityId,
+    );
+    if (conflictingIdentifier) {
+      return {
+        clientMutationId: mutation.clientMutationId,
+        status: "rejected",
+        entityId: mutation.entityId,
+        error: {
+          code: "DUPLICATE_IDENTIFIER",
+          message: "The paper cannot be restored because an active paper already uses the same identifier.",
+        },
+      };
+    }
+    const results = await db.batch([
+      db
+        .prepare(
+          "UPDATE papers SET deleted_at=NULL,updated_at=?,version=? WHERE id=? AND user_id=? AND version=?",
+        )
+        .bind(now, nextVersion, mutation.entityId, userId, currentVersion),
+      db
+        .prepare("UPDATE paper_identifiers SET deleted_at=NULL WHERE user_id=? AND paper_id=?")
+        .bind(userId, mutation.entityId),
+    ]);
+    const paperResult = results[0];
+    if (!paperResult) {
+      return {
+        clientMutationId: mutation.clientMutationId,
+        status: "conflict",
+        entityId: mutation.entityId,
+        error: { code: "VERSION_CONFLICT", message: "The paper was changed by another client." },
+      };
+    }
+    result = paperResult;
   } else if (mutation.operation === "update") {
     const assignments: string[] = [];
     const values: unknown[] = [];

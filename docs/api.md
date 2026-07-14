@@ -70,7 +70,7 @@ Account deletion accepts `{ "confirmation": "owner@example.com" }` and returns `
 | GET    | `/papers/:paperId/duplicate-candidates` | Identifier/file/title+year duplicate candidates                                                                                                       |
 | GET    | `/items/:itemId/bibtex`                 | Structureから生成したBibTeXを返す                                                                                                                      |
 
-DOI登録は `POST /metadata/resolve-doi` でプレビュー情報を取得します。`POST /items` は title がない場合でも `doi` または DOI identifier があればCrossrefから取得して登録できます。取得失敗時は `DOI_NOT_FOUND` / `METADATA_FETCH_FAILED` を返し、クライアントは手入力へ切り替えます。同一個人library内の同一DOIは `DUPLICATE_IDENTIFIER` です。
+DOI登録は `POST /metadata/resolve-doi` でプレビュー情報を取得します。`POST /items` は title がない場合でも `doi` または DOI identifier があればCrossrefから取得して登録できます。取得失敗時は `DOI_NOT_FOUND` / `METADATA_FETCH_FAILED` を返し、クライアントは手入力へ切り替えます。同一個人library内の現役論文にある同一DOIは `DUPLICATE_IDENTIFIER` ですが、ゴミ箱内の論文は重複判定から除外されます。ゴミ箱内の論文を復元する際に現役の同一DOIがあれば、復元は競合として拒否されます。
 
 List example:
 

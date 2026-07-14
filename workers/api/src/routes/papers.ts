@@ -221,10 +221,17 @@ async function ensureIdentifiersAvailable(
     if (seen.has(key))
       throw new ApiError(422, "DUPLICATE_IDENTIFIER_INPUT", "An identifier was repeated.");
     seen.add(key);
-    const existing = await first<{ paper_id: string } & Record<string, unknown>>(
+    const existing = await first<{
+      paper_id: string;
+      deleted_at: string | null;
+      version: number;
+    } & Record<string, unknown>>(
       db,
-      `SELECT paper_id FROM paper_identifiers
-       WHERE user_id = ? AND identifier_type = ? AND normalized_value = ?`,
+      `SELECT pi.paper_id,p.deleted_at,p.version
+       FROM paper_identifiers pi
+       JOIN papers p ON p.id=pi.paper_id AND p.user_id=pi.user_id
+       WHERE pi.user_id = ? AND pi.identifier_type = ? AND pi.normalized_value = ?
+         AND pi.deleted_at IS NULL AND p.deleted_at IS NULL`,
       userId,
       identifier.type,
       identifier.normalized,
@@ -238,6 +245,8 @@ async function ensureIdentifiersAvailable(
           paperId: existing.paper_id,
           identifierType: identifier.type,
           normalizedValue: identifier.normalized,
+          deletedAt: existing.deleted_at,
+          version: existing.version,
         },
       );
     }
@@ -473,7 +482,7 @@ papersRoutes.get("/", async (c) => {
     where.push(`(
       p.search_text LIKE ? OR lower(p.title) LIKE ? OR lower(COALESCE(p.abstract,'')) LIKE ?
       OR lower(COALESCE(p.venue,'')) LIKE ?
-      OR EXISTS(SELECT 1 FROM paper_identifiers pi WHERE pi.user_id=p.user_id AND pi.paper_id=p.id AND pi.normalized_value LIKE ?)
+      OR EXISTS(SELECT 1 FROM paper_identifiers pi WHERE pi.user_id=p.user_id AND pi.paper_id=p.id AND pi.deleted_at IS NULL AND pi.normalized_value LIKE ?)
       OR EXISTS(SELECT 1 FROM paper_authors pa JOIN authors a ON a.id=pa.author_id AND a.user_id=pa.user_id WHERE pa.user_id=p.user_id AND pa.paper_id=p.id AND a.normalized_name LIKE ?)
       OR EXISTS(SELECT 1 FROM paper_tags pt JOIN tags t ON t.id=pt.tag_id AND t.user_id=pt.user_id WHERE pt.user_id=p.user_id AND pt.paper_id=p.id AND t.normalized_name LIKE ?)
       OR EXISTS(SELECT 1 FROM notes n WHERE n.user_id=p.user_id AND n.paper_id=p.id AND n.deleted_at IS NULL AND lower(n.content_markdown) LIKE ?)
@@ -544,17 +553,37 @@ papersRoutes.post("/", async (c) => {
       ...rawRecord,
       title: metadata.title,
       identifiers: rawIdentifiers.length ? rawIdentifiers : [{ identifierType: "doi", value: metadata.doi }],
-      authors: rawRecord.authors ?? metadata.authors,
-      publicationDate: rawRecord.publicationDate ?? metadata.publicationDate,
-      publicationYear: rawRecord.publicationYear ?? metadata.publicationYear,
-      venue: rawRecord.venue ?? metadata.venue,
-      volume: rawRecord.volume ?? metadata.volume,
-      issue: rawRecord.issue ?? metadata.issue,
-      pages: rawRecord.pages ?? metadata.pages,
-      publisher: rawRecord.publisher ?? metadata.publisher,
-      language: rawRecord.language ?? metadata.language,
+      authors: Array.isArray(rawRecord.authors) && rawRecord.authors.length > 0
+        ? rawRecord.authors
+        : metadata.authors,
+      publicationDate: typeof rawRecord.publicationDate === "string" && rawRecord.publicationDate
+        ? rawRecord.publicationDate
+        : metadata.publicationDate,
+      publicationYear: typeof rawRecord.publicationYear === "number"
+        ? rawRecord.publicationYear
+        : metadata.publicationYear,
+      venue: typeof rawRecord.venue === "string" && rawRecord.venue.trim()
+        ? rawRecord.venue
+        : metadata.venue,
+      volume: typeof rawRecord.volume === "string" && rawRecord.volume.trim()
+        ? rawRecord.volume
+        : metadata.volume,
+      issue: typeof rawRecord.issue === "string" && rawRecord.issue.trim()
+        ? rawRecord.issue
+        : metadata.issue,
+      pages: typeof rawRecord.pages === "string" && rawRecord.pages.trim()
+        ? rawRecord.pages
+        : metadata.pages,
+      publisher: typeof rawRecord.publisher === "string" && rawRecord.publisher.trim()
+        ? rawRecord.publisher
+        : metadata.publisher,
+      language: typeof rawRecord.language === "string" && rawRecord.language.trim()
+        ? rawRecord.language
+        : metadata.language,
       paperType: rawRecord.paperType ?? metadata.paperType,
-      sourceUrl: rawRecord.sourceUrl ?? metadata.url,
+      sourceUrl: typeof rawRecord.sourceUrl === "string" && rawRecord.sourceUrl.trim()
+        ? rawRecord.sourceUrl
+        : metadata.url,
     };
   }
   const parsedInput = createPaperSchema.parse(normalizedRaw);
@@ -686,8 +715,8 @@ papersRoutes.post("/", async (c) => {
     statements.push(
       c.env.DB.prepare(
         `INSERT INTO paper_identifiers
-          (id,user_id,paper_id,identifier_type,normalized_value,original_value,identifier_version,created_at)
-         VALUES (?,?,?,?,?,?,?,?)`,
+          (id,user_id,paper_id,identifier_type,normalized_value,original_value,identifier_version,created_at,deleted_at)
+         VALUES (?,?,?,?,?,?,?,?,?)`,
       ).bind(
         identifier.id,
         userId,
@@ -697,6 +726,7 @@ papersRoutes.post("/", async (c) => {
         identifier.original,
         identifier.version,
         now,
+        null,
       ),
     );
   }
@@ -858,8 +888,8 @@ papersRoutes.patch("/:paperId", async (c) => {
       statements.push(
         c.env.DB.prepare(
           `INSERT INTO paper_identifiers
-            (id,user_id,paper_id,identifier_type,normalized_value,original_value,identifier_version,created_at)
-           VALUES (?,?,?,?,?,?,?,?)`,
+            (id,user_id,paper_id,identifier_type,normalized_value,original_value,identifier_version,created_at,deleted_at)
+           VALUES (?,?,?,?,?,?,?,?,?)`,
         ).bind(
           identifier.id,
           userId,
@@ -869,6 +899,7 @@ papersRoutes.patch("/:paperId", async (c) => {
           identifier.original,
           identifier.version,
           now,
+          existing.deleted_at ?? null,
         ),
       );
     }
@@ -937,12 +968,16 @@ papersRoutes.delete("/:paperId", async (c) => {
   if (existing.deleted_at) return c.body(null, 204);
   const now = nowUtcIso();
   const nextVersion = expectedVersion + 1;
-  const update = await c.env.DB.prepare(
-    "UPDATE papers SET deleted_at=?,updated_at=?,version=? WHERE id=? AND user_id=? AND version=? AND deleted_at IS NULL",
-  )
-    .bind(now, now, nextVersion, paperId, userId, expectedVersion)
-    .run();
-  if (update.meta.changes !== 1)
+  const results = await c.env.DB.batch([
+    c.env.DB.prepare(
+      "UPDATE papers SET deleted_at=?,updated_at=?,version=? WHERE id=? AND user_id=? AND version=? AND deleted_at IS NULL",
+    ).bind(now, now, nextVersion, paperId, userId, expectedVersion),
+    c.env.DB.prepare(
+      "UPDATE paper_identifiers SET deleted_at=? WHERE user_id=? AND paper_id=?",
+    ).bind(now, userId, paperId),
+  ]);
+  const paperResult = results[0];
+  if (!paperResult || paperResult.meta.changes !== 1)
     throw new ApiError(409, "VERSION_CONFLICT", "The paper was changed by another client.");
   await changeStatement(c.env.DB, {
     userId,
@@ -966,14 +1001,55 @@ papersRoutes.post("/:paperId/restore", async (c) => {
   }
   if (!existing.deleted_at)
     return c.json(paperFromRow(existing), 200, { ETag: `"${expectedVersion}"` });
+  const conflictingIdentifier = await first<{
+    paper_id: string;
+    identifier_type: string;
+    normalized_value: string;
+    version: number;
+  } & Record<string, unknown>>(
+    c.env.DB,
+    `SELECT active.paper_id,active.identifier_type,active.normalized_value,activePaper.version
+     FROM paper_identifiers trashed
+     JOIN paper_identifiers active
+       ON active.user_id=trashed.user_id
+      AND active.identifier_type=trashed.identifier_type
+      AND active.normalized_value=trashed.normalized_value
+      AND active.paper_id<>trashed.paper_id
+      AND active.deleted_at IS NULL
+     JOIN papers activePaper
+       ON activePaper.id=active.paper_id
+      AND activePaper.user_id=active.user_id
+      AND activePaper.deleted_at IS NULL
+     WHERE trashed.user_id=? AND trashed.paper_id=?
+     LIMIT 1`,
+    userId,
+    paperId,
+  );
+  if (conflictingIdentifier) {
+    throw new ApiError(
+      409,
+      "DUPLICATE_IDENTIFIER",
+      "This paper cannot be restored because an active paper already uses the same identifier.",
+      {
+        paperId: conflictingIdentifier.paper_id,
+        identifierType: conflictingIdentifier.identifier_type,
+        normalizedValue: conflictingIdentifier.normalized_value,
+        version: conflictingIdentifier.version,
+      },
+    );
+  }
   const now = nowUtcIso();
   const nextVersion = expectedVersion + 1;
-  const update = await c.env.DB.prepare(
-    "UPDATE papers SET deleted_at=NULL,updated_at=?,version=? WHERE id=? AND user_id=? AND version=?",
-  )
-    .bind(now, nextVersion, paperId, userId, expectedVersion)
-    .run();
-  if (update.meta.changes !== 1)
+  const results = await c.env.DB.batch([
+    c.env.DB.prepare(
+      "UPDATE papers SET deleted_at=NULL,updated_at=?,version=? WHERE id=? AND user_id=? AND version=?",
+    ).bind(now, nextVersion, paperId, userId, expectedVersion),
+    c.env.DB.prepare(
+      "UPDATE paper_identifiers SET deleted_at=NULL WHERE user_id=? AND paper_id=?",
+    ).bind(userId, paperId),
+  ]);
+  const paperResult = results[0];
+  if (!paperResult || paperResult.meta.changes !== 1)
     throw new ApiError(409, "VERSION_CONFLICT", "The paper was changed by another client.");
   const updated = await requirePaper(c.env.DB, userId, paperId);
   await changeStatement(c.env.DB, {
@@ -1037,6 +1113,7 @@ papersRoutes.get("/:paperId/duplicate-candidates", async (c) => {
            ON theirs.user_id=mine.user_id AND theirs.identifier_type=mine.identifier_type
           AND theirs.normalized_value=mine.normalized_value
          WHERE mine.user_id=? AND mine.paper_id=? AND theirs.paper_id=candidate.id
+           AND mine.deleted_at IS NULL AND theirs.deleted_at IS NULL
        )
        OR EXISTS(
          SELECT 1 FROM files mine JOIN files theirs
