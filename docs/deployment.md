@@ -132,6 +132,17 @@ mise run deploy
 
 The root deploy task first runs the same `deploy:check`, builds the workspace, deploys API Worker + assets with `--env production`, then deploys Jobs Worker with its production environment. The committed production D1 IDs and placeholder callback/extension/domain/R2-account/CORS values must be replaced first. For a future incompatible Queue-message change, do not use that normal order: deploy the backward-compatible Jobs consumer first, then the producer. The current message schema carries a `sourceVersion` value but no independent protocol-schema version.
 
+### GitHub Actions
+
+本番デプロイは `.github/workflows/deploy.yml` からも実行できます。`main` への push、または GitHub Actions の `Run workflow` で、チェック・ビルド後に API/Web assets、Jobs Worker の順でデプロイします。
+
+GitHub リポジトリの Settings → Environments で `production` 環境を作成し、次の2つを Environment secrets に登録してください。
+
+- `CLOUDFLARE_API_TOKEN`: Cloudflare の `Edit Cloudflare Workers` テンプレートで作成し、対象アカウントだけにスコープした API token
+- `CLOUDFLARE_ACCOUNT_ID`: 対象 Cloudflare アカウント ID
+
+`TOKEN_HASH_PEPPER`、`IP_HASH_SALT`、R2 のアクセスキーなどの Worker secrets は GitHub にコピーせず、Cloudflare 側に登録済みの値をそのまま使います。Cloudflare の API token はリポジトリに保存せず、GitHub Secrets からのみ参照してください。詳しくは [Cloudflare Workers の GitHub Actions 手順](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/) を参照してください。
+
 ## 9. Custom domain and staging
 
 - Before step 8, bind `citera.fujinoso.com` to API Worker; static assets and `/v1/*` share the origin to keep cookies SameSite and simplify CORS.

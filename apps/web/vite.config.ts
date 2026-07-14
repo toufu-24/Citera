@@ -17,6 +17,16 @@ export default defineConfig({
         display: "standalone",
         start_url: "/library",
         scope: "/",
+        icons: [
+          { src: "/favicon-192.png", sizes: "192x192", type: "image/png" },
+          { src: "/favicon-512.png", sizes: "512x512", type: "image/png" },
+          {
+            src: "/favicon-512.png",
+            sizes: "512x512",
+            type: "image/png",
+            purpose: "any maskable",
+          },
+        ],
         categories: ["education", "productivity"],
         shortcuts: [
           { name: "ライブラリ", short_name: "ライブラリ", url: "/library" },
@@ -25,7 +35,7 @@ export default defineConfig({
       },
       workbox: {
         navigateFallback: "/index.html",
-        globPatterns: ["**/*.{js,css,html,woff2,png,ico}"],
+        globPatterns: ["**/*.{js,css,html,woff2,png,svg,ico}"],
         cleanupOutdatedCaches: true,
       },
     }),

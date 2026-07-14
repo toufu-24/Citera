@@ -53,6 +53,12 @@
     "production": {
       "name": "citera-api",
       "workers_dev": false,
+      "routes": [
+        {
+          "pattern": "citera.fujinoso.com",
+          "custom_domain": true,
+        },
+      ],
       "assets": {
         "directory": "./apps/web/dist",
         "not_found_handling": "single-page-application",
@@ -85,8 +91,8 @@
         "APP_ORIGIN": "https://citera.fujinoso.com",
         "ALLOWED_ORIGINS": "https://citera.fujinoso.com,chrome-extension://bcmpmggbgiaemocjepddaeoehflhmhld",
         "ALLOWED_EXTENSION_IDS": "bcmpmggbgiaemocjepddaeoehflhmhld",
-        "ACCESS_TEAM_DOMAIN": "replace-with-team.cloudflareaccess.com",
-        "ACCESS_AUDIENCE": "replace-with-access-application-audience",
+        "ACCESS_TEAM_DOMAIN": "https://toufu24.cloudflareaccess.com",
+        "ACCESS_AUDIENCE": "36f724be1d6d50521aa1407fbaae17f78f24d887e4e12de8f24f30296401441f",
         "AUTH_DEV_BYPASS": "false",
         "R2_ACCOUNT_ID": "29a5c74691f1a050ade82be811456ab3",
         "R2_BUCKET_NAME": "citera-files",
