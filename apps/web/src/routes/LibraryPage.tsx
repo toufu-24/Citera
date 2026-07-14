@@ -43,6 +43,14 @@ const exportFormatLabel = {
   json: "JSON",
 } as const;
 
+const MIN_DRAWER_WIDTH = 420;
+const MAX_DRAWER_WIDTH = 960;
+
+function clampDrawerWidth(value: number) {
+  const viewportMax = Math.max(MIN_DRAWER_WIDTH, window.innerWidth - 320);
+  return Math.min(Math.min(MAX_DRAWER_WIDTH, viewportMax), Math.max(MIN_DRAWER_WIDTH, value));
+}
+
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("ja-JP", {
     month: "short",
@@ -125,6 +133,9 @@ function PaperRow({
           </p>
         </div>
       </td>
+      <td className="summary-cell">
+        {paper.summary ? <span title={paper.summary}>{paper.summary}</span> : <span>—</span>}
+      </td>
       <td>
         <span className={`status-badge status-${paper.status}`}>{statusLabel[paper.status]}</span>
       </td>
@@ -172,6 +183,11 @@ export function LibraryPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkTagId, setBulkTagId] = useState("");
   const [openPaperId, setOpenPaperId] = useState<string | null>(null);
+  const [drawerWidth, setDrawerWidth] = useState(() =>
+    clampDrawerWidth(Math.min(720, Math.round(window.innerWidth * 0.58))),
+  );
+  const [drawerResizing, setDrawerResizing] = useState(false);
+  const drawerResizeStartRef = useRef<{ x: number; width: number } | null>(null);
   const createDialog = useRef<HTMLDialogElement>(null);
   const queryClient = useQueryClient();
   const preferences = useQuery({ queryKey: ["preferences"], queryFn: api.preferences });
@@ -325,6 +341,41 @@ export function LibraryPage() {
       window.removeEventListener("keydown", closeOnEscape);
     };
   }, [openPaperId]);
+
+  useEffect(() => {
+    if (!drawerResizing) return;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.userSelect = "none";
+    return () => {
+      document.body.style.userSelect = previousUserSelect;
+    };
+  }, [drawerResizing]);
+
+  function startDrawerResize(event: React.PointerEvent<HTMLDivElement>) {
+    if (window.innerWidth <= 820) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    drawerResizeStartRef.current = { x: event.clientX, width: drawerWidth };
+    setDrawerResizing(true);
+  }
+
+  function resizeDrawer(event: React.PointerEvent<HTMLDivElement>) {
+    const start = drawerResizeStartRef.current;
+    if (!start) return;
+    setDrawerWidth(clampDrawerWidth(start.width - (event.clientX - start.x)));
+  }
+
+  function endDrawerResize(event: React.PointerEvent<HTMLDivElement>) {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    drawerResizeStartRef.current = null;
+    setDrawerResizing(false);
+  }
+
+  function nudgeDrawerWidth(delta: number) {
+    setDrawerWidth((current) => clampDrawerWidth(current + delta));
+  }
 
   function toggleAll(checked: boolean) {
     setSelected(checked ? new Set(items.map((paper) => paper.id)) : new Set());
@@ -642,6 +693,7 @@ export function LibraryPage() {
                     />
                   </th>
                   <th>論文</th>
+                  <th>一言要約</th>
                   <th>状態</th>
                   <th>年</th>
                   <th>掲載誌・会議</th>
@@ -689,7 +741,36 @@ export function LibraryPage() {
             aria-label="論文詳細を閉じる"
             onClick={() => setOpenPaperId(null)}
           />
-          <aside className="library-detail-drawer" aria-label="論文詳細">
+          <aside
+            className={
+              drawerResizing ? "library-detail-drawer is-resizing" : "library-detail-drawer"
+            }
+            style={{ width: drawerWidth }}
+            aria-label="論文詳細"
+          >
+            <div
+              className="drawer-resize-handle"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="詳細ドロワーの幅を変更"
+              aria-valuemin={MIN_DRAWER_WIDTH}
+              aria-valuemax={MAX_DRAWER_WIDTH}
+              aria-valuenow={drawerWidth}
+              tabIndex={0}
+              onPointerDown={startDrawerResize}
+              onPointerMove={resizeDrawer}
+              onPointerUp={endDrawerResize}
+              onPointerCancel={endDrawerResize}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowLeft") {
+                  event.preventDefault();
+                  nudgeDrawerWidth(24);
+                } else if (event.key === "ArrowRight") {
+                  event.preventDefault();
+                  nudgeDrawerWidth(-24);
+                }
+              }}
+            />
             <PaperDetailView
               paperId={openPaperId}
               drawer

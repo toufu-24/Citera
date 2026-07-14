@@ -173,6 +173,7 @@ export const papers = sqliteTable(
     libraryId: text("library_id").references(() => libraries.id, { onDelete: "set null" }),
     title: text("title").notNull(),
     abstract: text("abstract"),
+    summary: text("summary"),
     publicationYear: integer("publication_year"),
     publicationDate: text("publication_date"),
     venue: text("venue"),

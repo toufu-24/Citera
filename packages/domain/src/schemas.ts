@@ -208,6 +208,7 @@ export type FileSummary = z.infer<typeof FileSummarySchema>;
 export const PaperSummarySchema = z.object({
   id: PaperIdSchema,
   title: z.string().trim().min(1).max(10_000),
+  summary: z.string().max(240).nullable(),
   authors: z.array(AuthorSchema),
   publicationYear: z.number().int().min(1000).max(9999).nullable(),
   publicationDate: z.string().date().nullable(),

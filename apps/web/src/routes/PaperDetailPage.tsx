@@ -1,20 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
-import DOMPurify from "dompurify";
 import {
   AlertTriangle,
   ArrowLeft,
   BookMarked,
   BookOpen,
   CalendarDays,
-  Check,
   ChevronRight,
+  Columns2,
   Copy,
   ExternalLink,
   FileText,
   FolderPlus,
   MoreHorizontal,
-  NotebookPen,
   Pencil,
   RefreshCw,
   Save,
@@ -25,12 +23,11 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { marked } from "marked";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { PdfUpload } from "../components/PdfUpload";
 import { PdfViewer } from "../components/PdfViewer";
-import { api, type NoteRecord, type PaperDetail } from "../lib/api";
+import { api, type PaperDetail } from "../lib/api";
 
 const statusLabel: Record<PaperDetail["status"], string> = {
   inbox: "未整理",
@@ -51,99 +48,6 @@ function formString(form: FormData, name: string): string {
   return typeof value === "string" ? value : "";
 }
 
-function NoteCard({
-  note,
-  onSave,
-  onDelete,
-  onPageSelect,
-  saving,
-}: {
-  note: NoteRecord;
-  onSave: (contentMarkdown: string) => void;
-  onDelete: () => void;
-  onPageSelect?: (() => void) | undefined;
-  saving: boolean;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [content, setContent] = useState(note.contentMarkdown);
-  const html = useMemo(
-    () => DOMPurify.sanitize(marked.parse(note.contentMarkdown, { async: false })),
-    [note.contentMarkdown],
-  );
-
-  return (
-    <article className="note-card">
-      <header>
-        {note.noteType === "page" && onPageSelect ? (
-          <button
-            type="button"
-            className="note-kind note-page note-page-link"
-            onClick={onPageSelect}
-            aria-label={`${note.pageNumber ?? "不明"}ページへ移動`}
-          >
-            p. {note.pageNumber ?? "—"}
-          </button>
-        ) : (
-          <span className={`note-kind note-${note.noteType}`}>
-            {note.noteType === "page"
-              ? `p. ${note.pageNumber ?? "—"}`
-              : note.noteType === "todo"
-                ? "TODO"
-                : note.noteType === "summary"
-                  ? "要約"
-                  : "メモ"}
-          </span>
-        )}
-        <time dateTime={note.updatedAt}>
-          {new Intl.DateTimeFormat("ja-JP", {
-            month: "short",
-            day: "numeric",
-            hour: "2-digit",
-            minute: "2-digit",
-          }).format(new Date(note.updatedAt))}
-        </time>
-        <button
-          type="button"
-          className="icon-button"
-          onClick={() => setEditing((value) => !value)}
-          aria-label={editing ? "メモ編集を閉じる" : "メモを編集"}
-        >
-          <Pencil size={14} />
-        </button>
-      </header>
-      {editing ? (
-        <form
-          className="note-editor"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (content.trim()) {
-              onSave(content);
-              setEditing(false);
-            }
-          }}
-        >
-          <textarea
-            value={content}
-            onChange={(event) => setContent(event.target.value)}
-            rows={5}
-            aria-label="メモ本文"
-          />
-          <footer>
-            <button type="button" className="text-button danger" onClick={onDelete}>
-              <Trash2 size={13} /> 削除
-            </button>
-            <button className="button primary compact" disabled={!content.trim() || saving}>
-              <Save size={14} /> 更新
-            </button>
-          </footer>
-        </form>
-      ) : (
-        <div className="markdown-body" dangerouslySetInnerHTML={{ __html: html }} />
-      )}
-    </article>
-  );
-}
-
 type PaperDetailViewProps = {
   paperId: string;
   drawer?: boolean;
@@ -160,17 +64,18 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
   const queryClient = useQueryClient();
   const [currentPage, setCurrentPage] = useState(1);
   const [mobileTab, setMobileTab] = useState<"pdf" | "details">("details");
-  const [inspectorTab, setInspectorTab] = useState<"notes" | "info" | "outline">("info");
+  const [inspectorTab, setInspectorTab] = useState<"comment" | "info" | "outline">("info");
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [focusMode, setFocusMode] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [noteType, setNoteType] = useState<NoteRecord["noteType"]>("general");
-  const [noteContent, setNoteContent] = useState("");
   const [paperNote, setPaperNote] = useState<string | null>(null);
+  const [summaryDraft, setSummaryDraft] = useState<string | null>(null);
   const [tagEditorOpen, setTagEditorOpen] = useState(false);
   const [collectionEditorOpen, setCollectionEditorOpen] = useState(false);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
   const [libraryQuery, setLibraryQuery] = useState("");
+  const [comparePdfs, setComparePdfs] = useState(false);
+  const compareViewersRef = useRef<HTMLDivElement>(null);
 
   const paper = useQuery({ queryKey: ["paper", paperId], queryFn: () => api.paper(paperId) });
   const libraryPapers = useQuery({
@@ -236,30 +141,6 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
     },
   });
 
-  const addNote = useMutation({
-    mutationFn: () =>
-      api.addNote(paperId, {
-        noteType,
-        pageNumber: noteType === "page" ? currentPage : null,
-        contentMarkdown: noteContent,
-      }),
-    onSuccess: () => {
-      setNoteContent("");
-      void queryClient.invalidateQueries({ queryKey: ["paper", paperId] });
-    },
-  });
-
-  const editNote = useMutation({
-    mutationFn: ({ note, contentMarkdown }: { note: NoteRecord; contentMarkdown: string }) =>
-      api.updateNote(note.id, note.version, { contentMarkdown }),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["paper", paperId] }),
-  });
-
-  const deleteNote = useMutation({
-    mutationFn: (note: NoteRecord) => api.removeNote(note.id, note.version),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["paper", paperId] }),
-  });
-
   const deletePaper = useMutation({
     mutationFn: () => {
       if (!paper.data) throw new Error("Paper is not loaded");
@@ -288,16 +169,6 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
       ),
     [files],
   );
-  const orderedNotes = useMemo(
-    () =>
-      [...(paper.data?.notes ?? [])].sort(
-        (left, right) =>
-          Number(right.noteType === "page" && right.pageNumber === currentPage) -
-            Number(left.noteType === "page" && left.pageNumber === currentPage) ||
-          new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
-      ),
-    [currentPage, paper.data?.notes],
-  );
   const visibleLibraryPapers = useMemo(() => {
     const normalizedQuery = libraryQuery.trim().toLocaleLowerCase("ja-JP");
     if (!normalizedQuery) return libraryPapers.data?.items ?? [];
@@ -311,10 +182,15 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
     if (paper.data && paperNote === null) setPaperNote(paper.data.noteMarkdown ?? "");
   }, [paper.data, paperNote]);
   useEffect(() => {
+    if (paper.data && summaryDraft === null) setSummaryDraft(paper.data.summary ?? "");
+  }, [paper.data, summaryDraft]);
+  useEffect(() => {
     setPaperNote(null);
+    setSummaryDraft(null);
     setCurrentPage(1);
     setMobileTab("details");
     setInspectorTab("info");
+    setComparePdfs(false);
   }, [paperId]);
   useEffect(() => {
     document.body.classList.toggle("citera-focus-mode", focusMode);
@@ -520,6 +396,17 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
                 このPDFを既定にする
               </button>
             )}
+            {orderedFiles.length > 1 && (
+              <button
+                type="button"
+                className={comparePdfs ? "pdf-compare-toggle active" : "pdf-compare-toggle"}
+                onClick={() => setComparePdfs((value) => !value)}
+                aria-pressed={comparePdfs}
+                title={comparePdfs ? "PDFを1つずつ表示" : "PDFを横並びで表示"}
+              >
+                <Columns2 size={14} /> {comparePdfs ? "1つずつ表示" : "横並びで表示"}
+              </button>
+            )}
           </nav>
         )}
 
@@ -540,7 +427,7 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
             className={mobileTab === "details" ? "active" : ""}
             onClick={() => setMobileTab("details")}
           >
-            情報とメモ
+            情報とコメント
           </button>
         </div>
 
@@ -549,23 +436,44 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
             role="tabpanel"
             className={mobileTab === "pdf" ? "pdf-pane mobile-active" : "pdf-pane"}
           >
-            <PdfViewer
-              fileId={pdf?.id ?? null}
-              title={data.title}
-              page={currentPage}
-              onPageChange={setCurrentPage}
-              inspectorOpen={inspectorOpen}
-              onToggleInspector={() => setInspectorOpen((value) => !value)}
-              focusMode={focusMode}
-              onToggleFocus={() => setFocusMode((value) => !value)}
-              onCreatePageNote={(pageNumber) => {
-                setCurrentPage(pageNumber);
-                setNoteType("page");
-                setInspectorTab("notes");
-                setInspectorOpen(true);
-                setFocusMode(false);
-              }}
-            />
+            {comparePdfs && orderedFiles.length > 1 ? (
+              <div
+                ref={compareViewersRef}
+                className="pdf-compare-viewers"
+                aria-label="PDF横並び表示"
+              >
+                {orderedFiles.map((file) => (
+                  <article className="pdf-compare-viewer" key={file.id}>
+                    <header className="pdf-compare-viewer-header">
+                      <strong>{file.label ?? file.originalName}</strong>
+                      {file.isDefault && <span>既定</span>}
+                    </header>
+                    <PdfViewer
+                      fileId={file.id}
+                      title={`${data.title} - ${file.label ?? file.originalName}`}
+                      page={currentPage}
+                      onPageChange={setCurrentPage}
+                      inspectorOpen={inspectorOpen}
+                      onToggleInspector={() => setInspectorOpen((value) => !value)}
+                      focusMode={focusMode}
+                      onToggleFocus={() => setFocusMode((value) => !value)}
+                      fullscreenTargetRef={compareViewersRef}
+                    />
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <PdfViewer
+                fileId={pdf?.id ?? null}
+                title={data.title}
+                page={currentPage}
+                onPageChange={setCurrentPage}
+                inspectorOpen={inspectorOpen}
+                onToggleInspector={() => setInspectorOpen((value) => !value)}
+                focusMode={focusMode}
+                onToggleFocus={() => setFocusMode((value) => !value)}
+              />
+            )}
           </div>
           <aside
             role="tabpanel"
@@ -575,11 +483,11 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
               <button
                 type="button"
                 role="tab"
-                aria-selected={inspectorTab === "notes"}
-                className={inspectorTab === "notes" ? "active" : ""}
-                onClick={() => setInspectorTab("notes")}
+                aria-selected={inspectorTab === "comment"}
+                className={inspectorTab === "comment" ? "active" : ""}
+                onClick={() => setInspectorTab("comment")}
               >
-                メモ
+                コメント
               </button>
               <button
                 type="button"
@@ -817,9 +725,9 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
                       <button
                         type="button"
                         className="button secondary"
-                        onClick={() => setInspectorTab("notes")}
+                        onClick={() => setInspectorTab("comment")}
                       >
-                        <NotebookPen size={17} /> メモを追加
+                        <Pencil size={17} /> コメントを書く
                       </button>
                     </div>
                     {(toggleTag.error || toggleCollection.error) && (
@@ -832,6 +740,38 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
                         変更を保存できませんでした。再読み込みしてお試しください。
                       </p>
                     )}
+                  </section>
+
+                  <section className="summary-section">
+                    <header>
+                      <div>
+                        <p className="eyebrow">LIBRARY SUMMARY</p>
+                        <h2>一言要約</h2>
+                      </div>
+                      <span className="muted-copy">論文一覧に表示</span>
+                    </header>
+                    <input
+                      value={summaryDraft ?? ""}
+                      onChange={(event) => setSummaryDraft(event.target.value)}
+                      maxLength={240}
+                      placeholder="この論文を一言で表すと…"
+                      aria-label="一言要約"
+                    />
+                    <div className="summary-actions">
+                      <span className="muted-copy">240文字まで</span>
+                      <button
+                        type="button"
+                        className="button primary compact"
+                        onClick={() => update.mutate({ summary: summaryDraft?.trim() || null })}
+                        disabled={
+                          update.isPending ||
+                          summaryDraft === null ||
+                          summaryDraft === (data.summary ?? "")
+                        }
+                      >
+                        <Save size={15} /> 保存
+                      </button>
+                    </div>
                   </section>
 
                   <section className="metadata-section" id="paper-abstract">
@@ -921,51 +861,6 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
                     )}
                   </section>
 
-                  <section className="recent-notes-section">
-                    <header>
-                      <h2>最近のメモ</h2>
-                      <button
-                        type="button"
-                        className="text-icon-button"
-                        onClick={() => setInspectorTab("notes")}
-                      >
-                        すべて見る <ChevronRight size={14} />
-                      </button>
-                    </header>
-                    {orderedNotes.length ? (
-                      <div className="note-list">
-                        {orderedNotes.slice(0, 2).map((note) => (
-                          <NoteCard
-                            key={note.id}
-                            note={note}
-                            saving={editNote.isPending}
-                            onPageSelect={
-                              note.noteType === "page" && note.pageNumber
-                                ? () => {
-                                    setCurrentPage(note.pageNumber ?? 1);
-                                    setMobileTab("pdf");
-                                  }
-                                : undefined
-                            }
-                            onSave={(contentMarkdown) => editNote.mutate({ note, contentMarkdown })}
-                            onDelete={() => {
-                              if (window.confirm("このメモを削除しますか？"))
-                                deleteNote.mutate(note);
-                            }}
-                          />
-                        ))}
-                      </div>
-                    ) : (
-                      <button
-                        type="button"
-                        className="recent-notes-empty"
-                        onClick={() => setInspectorTab("notes")}
-                      >
-                        <NotebookPen size={18} /> 最初のメモを追加
-                      </button>
-                    )}
-                  </section>
-
                   <section className="danger-zone">
                     <button
                       type="button"
@@ -984,128 +879,41 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
                     )}
                   </section>
                 </>
-              ) : inspectorTab === "notes" ? (
-                <>
-                  <section className="notes-section">
-                    <header>
-                      <div>
-                        <p className="eyebrow">ANNOTATIONS</p>
-                        <h2>
-                          <span className="current-page-note-title">
-                            ページ {currentPage} のメモ
-                          </span>
-                          <span className="note-count">{data.notes.length}</span>
-                        </h2>
-                      </div>
-                    </header>
-                    <form
-                      className="note-composer"
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        if (noteContent.trim()) addNote.mutate();
-                      }}
-                    >
-                      <div className="note-type-row">
-                        <select
-                          value={noteType}
-                          onChange={(event) =>
-                            setNoteType(event.target.value as NoteRecord["noteType"])
-                          }
-                          aria-label="メモ種別"
-                        >
-                          <option value="general">全体メモ</option>
-                          <option value="page">ページメモ（p. {currentPage}）</option>
-                          <option value="summary">要約</option>
-                          <option value="todo">TODO</option>
-                        </select>
-                        <span>Markdown</span>
-                      </div>
-                      <textarea
-                        value={noteContent}
-                        onChange={(event) => setNoteContent(event.target.value)}
-                        onKeyDown={(event) => {
-                          if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-                            event.preventDefault();
-                            event.currentTarget.form?.requestSubmit();
-                          }
-                        }}
-                        rows={4}
-                        aria-label="新しいメモ"
-                        placeholder={
-                          noteType === "page"
-                            ? `ページ ${currentPage} の気づきを残す…`
-                            : "この論文についてメモを残す…"
-                        }
-                      />
-                      <footer>
-                        <span>⌘ + Enter で保存</span>
-                        <button
-                          className="button primary compact"
-                          disabled={!noteContent.trim() || addNote.isPending}
-                        >
-                          <Check size={15} /> 保存
-                        </button>
-                      </footer>
-                    </form>
-                    {addNote.error && (
-                      <p className="form-error" role="alert">
-                        メモを保存できませんでした。
-                      </p>
-                    )}
-                    <div className="note-list">
-                      {orderedNotes.length ? (
-                        orderedNotes.map((note) => (
-                          <NoteCard
-                            key={note.id}
-                            note={note}
-                            saving={editNote.isPending}
-                            onPageSelect={
-                              note.noteType === "page" && note.pageNumber
-                                ? () => {
-                                    setCurrentPage(note.pageNumber ?? 1);
-                                    setMobileTab("pdf");
-                                  }
-                                : undefined
-                            }
-                            onSave={(contentMarkdown) => editNote.mutate({ note, contentMarkdown })}
-                            onDelete={() => {
-                              if (window.confirm("このメモを削除しますか？"))
-                                deleteNote.mutate(note);
-                            }}
-                          />
-                        ))
-                      ) : (
-                        <div className="notes-empty">
-                          <FileText size={20} />
-                          <p>まだメモはありません。読みながら気づきを残しましょう。</p>
-                        </div>
-                      )}
+              ) : inspectorTab === "comment" ? (
+                <section className="comment-section">
+                  <header>
+                    <div>
+                      <p className="eyebrow">COMMENT</p>
+                      <h2>論文へのコメント</h2>
                     </div>
-                  </section>
-
-                  <section className="metadata-section paper-note-section">
-                    <header>
-                      <div>
-                        <p className="eyebrow">PAPER NOTE</p>
-                        <h2>Markdownメモ</h2>
-                      </div>
-                      <span className="muted-copy">論文ごとに1件</span>
-                    </header>
-                    <textarea
-                      value={paperNote ?? ""}
-                      onChange={(event) => setPaperNote(event.target.value)}
-                      onBlur={() => {
-                        if (paperNote !== (data.noteMarkdown ?? "")) {
-                          update.mutate({ noteMarkdown: paperNote ?? null });
-                        }
-                      }}
-                      rows={8}
-                      placeholder="要点、重要な数式、実験条件、研究との関連など…"
-                      aria-label="論文のMarkdownメモ"
-                    />
-                    <p className="muted-copy">入力欄からフォーカスを外すと保存します。</p>
-                  </section>
-                </>
+                    <span className="muted-copy">論文全体に対して</span>
+                  </header>
+                  <textarea
+                    value={paperNote ?? ""}
+                    onChange={(event) => setPaperNote(event.target.value)}
+                    rows={12}
+                    placeholder="この論文について気づいたこと、研究との関係など…"
+                    aria-label="論文へのコメント"
+                  />
+                  <div className="comment-actions">
+                    <span className="muted-copy">必要ならMarkdownも使えます。</span>
+                    <button
+                      type="button"
+                      className="button primary compact"
+                      onClick={() => update.mutate({ noteMarkdown: paperNote?.trim() || null })}
+                      disabled={
+                        update.isPending || paperNote === null || paperNote === (data.noteMarkdown ?? "")
+                      }
+                    >
+                      <Save size={15} /> 保存
+                    </button>
+                  </div>
+                  {update.error && (
+                    <p className="form-error" role="alert">
+                      コメントを保存できませんでした。再読み込みしてお試しください。
+                    </p>
+                  )}
+                </section>
               ) : (
                 <section className="outline-empty">
                   <FileText size={22} />

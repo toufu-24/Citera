@@ -1,4 +1,9 @@
-import type { PDFDocumentLoadingTask, PDFDocumentProxy, RenderTask } from "pdfjs-dist";
+import type {
+  PDFDocumentLoadingTask,
+  PDFDocumentProxy,
+  RenderTask,
+  TextLayer as PdfTextLayer,
+} from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import {
   ChevronLeft,
@@ -12,7 +17,7 @@ import {
   RotateCcw,
   RotateCw,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 
 import { api, shouldSendCredentials } from "../lib/api";
 
@@ -27,7 +32,7 @@ interface PdfViewerProps {
   onToggleInspector?: () => void;
   focusMode?: boolean;
   onToggleFocus?: () => void;
-  onCreatePageNote?: (page: number) => void;
+  fullscreenTargetRef?: RefObject<HTMLElement | null>;
 }
 
 interface PageDimensions {
@@ -48,7 +53,7 @@ const MAX_SCALE = 4;
 const VIEW_MODE_STORAGE_KEY = "citera.pdf.view-mode";
 const SCALE_STORAGE_KEY = "citera.pdf.scale";
 const VIRTUAL_PAGE_RADIUS = 3;
-const PAGE_LABEL_HEIGHT = 27;
+const PAGE_LABEL_HEIGHT = 0;
 
 function readStoredMode(): PdfViewMode {
   try {
@@ -120,32 +125,51 @@ function PdfPageCanvas({
   title: string;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const textLayerRef = useRef<HTMLDivElement>(null);
   const [renderError, setRenderError] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     let renderTask: RenderTask | undefined;
+    let textLayer: PdfTextLayer | undefined;
     setRenderError(false);
     void documentHandle
       .getPage(pageNumber)
       .then((pdfPage) => {
-        if (cancelled || !canvasRef.current) return;
+        if (cancelled || !canvasRef.current || !textLayerRef.current) return;
         const pixelRatio = window.devicePixelRatio || 1;
         const viewport = pdfPage.getViewport({ scale, rotation });
         const canvas = canvasRef.current;
+        const textLayerElement = textLayerRef.current;
         const context = canvas.getContext("2d");
         if (!context) throw new Error("Canvas 2D is not available");
         canvas.width = Math.round(viewport.width * pixelRatio);
         canvas.height = Math.round(viewport.height * pixelRatio);
         canvas.style.width = `${viewport.width}px`;
         canvas.style.height = `${viewport.height}px`;
+        textLayerElement.replaceChildren();
+        textLayerElement.style.setProperty("--total-scale-factor", String(scale));
+        textLayerElement.style.setProperty("--scale-factor", String(scale));
         renderTask = pdfPage.render({
           canvas,
           canvasContext: context,
           viewport,
           transform: pixelRatio === 1 ? undefined : [pixelRatio, 0, 0, pixelRatio, 0, 0],
         });
-        return renderTask.promise;
+        const textContentPromise = pdfPage
+          .getTextContent()
+          .then(async (textContent) => {
+            if (cancelled) return;
+            const { TextLayer } = await import("pdfjs-dist");
+            textLayer = new TextLayer({
+              textContentSource: textContent,
+              container: textLayerElement,
+              viewport,
+            });
+            await textLayer.render();
+          })
+          .catch(() => undefined);
+        return Promise.all([renderTask.promise, textContentPromise]);
       })
       .catch((error: unknown) => {
         if (
@@ -158,13 +182,20 @@ function PdfPageCanvas({
     return () => {
       cancelled = true;
       renderTask?.cancel();
+      textLayer?.cancel();
+      textLayerRef.current?.replaceChildren();
     };
   }, [documentHandle, pageNumber, rotation, scale]);
 
   if (renderError) {
     return <span className="pdf-page-render-error">このページを描画できませんでした。</span>;
   }
-  return <canvas ref={canvasRef} role="img" aria-label={`${title}、${pageNumber} ページ目`} />;
+  return (
+    <>
+      <canvas ref={canvasRef} role="img" aria-label={`${title}、${pageNumber} ページ目`} />
+      <div ref={textLayerRef} className="pdf-text-layer" aria-label="本文テキスト" />
+    </>
+  );
 }
 
 export function PdfViewer({
@@ -176,8 +207,9 @@ export function PdfViewer({
   onToggleInspector,
   focusMode = false,
   onToggleFocus,
-  onCreatePageNote,
+  fullscreenTargetRef,
 }: PdfViewerProps) {
+  const viewerRef = useRef<HTMLElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const pageElementsRef = useRef(new Map<number, HTMLElement>());
   const intersectionAreasRef = useRef(new Map<number, number>());
@@ -203,7 +235,18 @@ export function PdfViewer({
   const [zoomDraft, setZoomDraft] = useState("100");
   const [editingPage, setEditingPage] = useState(false);
   const [pageDraft, setPageDraft] = useState("1");
+  const [isFullscreen, setIsFullscreen] = useState(false);
   currentPageRef.current = page;
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(
+        document.fullscreenElement === (fullscreenTargetRef?.current ?? viewerRef.current),
+      );
+    };
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange);
+  }, [fullscreenTargetRef]);
 
   useEffect(() => {
     const controlledPageChanged = controlledPage !== lastControlledPageRef.current;
@@ -377,6 +420,18 @@ export function PdfViewer({
     });
   }
 
+  function handleZoomWheel(event: React.WheelEvent<HTMLDivElement>) {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    const factor = event.deltaY < 0 ? 1.1 : 0.9;
+    preservePageAfterLayoutChange(() => {
+      setCustomScale(
+        Math.min(MAX_SCALE, Math.max(MIN_SCALE, Math.round(effectiveScale * factor * 100) / 100)),
+      );
+      setViewMode("custom");
+    });
+  }
+
   useEffect(() => {
     onPageChange?.(page);
   }, [onPageChange, page]);
@@ -424,13 +479,13 @@ export function PdfViewer({
         return;
       }
       if (!event.metaKey && !event.ctrlKey && !event.altKey && event.key.toLowerCase() === "f") {
-        onToggleFocus?.();
-        if (onToggleFocus) event.preventDefault();
+        toggleFullscreen();
+        event.preventDefault();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [effectiveScale, onToggleFocus, pageCount]);
+  }, [effectiveScale, focusMode, onToggleFocus, pageCount]);
 
   function adjustScale(delta: number) {
     preservePageAfterLayoutChange(() => {
@@ -460,6 +515,26 @@ export function PdfViewer({
     setEditingPage(false);
   }
 
+  function toggleFullscreen() {
+    const fullscreenTarget = fullscreenTargetRef?.current ?? viewerRef.current;
+    if (!fullscreenTarget) return;
+    if (document.fullscreenElement === fullscreenTarget) {
+      void document.exitFullscreen();
+      return;
+    }
+    if (focusMode && onToggleFocus && !document.fullscreenElement && !fullscreenTargetRef) {
+      onToggleFocus();
+      return;
+    }
+    if (fullscreenTarget.requestFullscreen) {
+      void fullscreenTarget
+        .requestFullscreen({ navigationUI: "hide" })
+        .catch(() => onToggleFocus?.());
+      return;
+    }
+    onToggleFocus?.();
+  }
+
   if (!fileId) {
     return (
       <div className="pdf-empty">
@@ -474,6 +549,7 @@ export function PdfViewer({
 
   return (
     <section
+      ref={viewerRef}
       className="pdf-viewer"
       aria-label={`${title} の PDF`}
       aria-busy={!documentHandle && !error}
@@ -621,17 +697,15 @@ export function PdfViewer({
               <PanelRight size={17} />
             </button>
           )}
-          {onToggleFocus && (
-            <button
-              type="button"
-              className="icon-button"
-              onClick={onToggleFocus}
-              aria-label={focusMode ? "集中モードを終了" : "集中モード"}
-              title={focusMode ? "集中モードを終了 (F)" : "集中モード (F)"}
-            >
-              {focusMode ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
-            </button>
-          )}
+          <button
+            type="button"
+            className={`icon-button ${isFullscreen ? "active" : ""}`}
+            onClick={toggleFullscreen}
+            aria-label={isFullscreen || focusMode ? "全画面表示を終了" : "全画面表示"}
+            title={isFullscreen || focusMode ? "全画面表示を終了 (F)" : "全画面表示 (F)"}
+          >
+            {isFullscreen || focusMode ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
+          </button>
           {url && (
             <a
               className="icon-button"
@@ -645,7 +719,13 @@ export function PdfViewer({
           )}
         </div>
       </div>
-      <div ref={stageRef} className="pdf-stage" tabIndex={0} aria-label="PDF表示領域">
+      <div
+        ref={stageRef}
+        className="pdf-stage"
+        tabIndex={0}
+        aria-label="PDF表示領域"
+        onWheel={handleZoomWheel}
+      >
         {error ? (
           <div className="pdf-error" role="alert">
             <p>{error}</p>
@@ -706,19 +786,7 @@ export function PdfViewer({
                       <span className="pdf-page-placeholder" aria-hidden="true" />
                     )}
                   </div>
-                  {onCreatePageNote ? (
-                    <button
-                      type="button"
-                      className="pdf-page-number"
-                      onClick={() => onCreatePageNote(dimensions.pageNumber)}
-                      title={`ページ ${dimensions.pageNumber} にメモを追加`}
-                    >
-                      p. {dimensions.pageNumber}
-                      <span>メモ</span>
-                    </button>
-                  ) : (
-                    <span className="pdf-page-number">p. {dimensions.pageNumber}</span>
-                  )}
+                  <span className="pdf-page-number">p. {dimensions.pageNumber}</span>
                   <span className="sr-only">ページ {dimensions.pageNumber} の終わり</span>
                 </section>
               );

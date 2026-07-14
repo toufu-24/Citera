@@ -57,6 +57,7 @@ const nullableText = (maximum: number) => z.string().trim().max(maximum).nullabl
 const paperFieldsSchema = z.object({
   title: z.string().trim().min(1).max(10_000),
   abstract: nullableText(1_000_000),
+  summary: nullableText(240),
   publicationYear: z.number().int().min(1000).max(9999).nullable().optional(),
   publicationDate: z.string().date().nullable().optional(),
   venue: nullableText(2_000),
@@ -306,6 +307,7 @@ async function authorStatements(
 const fieldColumns: Record<string, string> = {
   title: "title",
   abstract: "abstract",
+  summary: "summary",
   publicationYear: "publication_year",
   publicationDate: "publication_date",
   venue: "venue",
@@ -487,8 +489,9 @@ papersRoutes.get("/", async (c) => {
       OR EXISTS(SELECT 1 FROM paper_tags pt JOIN tags t ON t.id=pt.tag_id AND t.user_id=pt.user_id WHERE pt.user_id=p.user_id AND pt.paper_id=p.id AND t.normalized_name LIKE ?)
       OR EXISTS(SELECT 1 FROM notes n WHERE n.user_id=p.user_id AND n.paper_id=p.id AND n.deleted_at IS NULL AND lower(n.content_markdown) LIKE ?)
       OR lower(COALESCE(p.note_markdown,'')) LIKE ?
+      OR lower(COALESCE(p.summary,'')) LIKE ?
     )`);
-    bindings.push(query, query, query, query, query, query, query, query, query);
+    bindings.push(query, query, query, query, query, query, query, query, query, query);
   }
   if (input.cursor) {
     const cursor = decodeCursor<{
@@ -646,23 +649,32 @@ papersRoutes.post("/", async (c) => {
   const id = createId("pap");
   const now = nowUtcIso();
   const searchText = normalizeComparableText(
-    [input.title, input.abstract, input.venue, ...input.authors.map((author) => author.displayName)]
+    [
+      input.title,
+      input.abstract,
+      input.summary,
+      input.venue,
+      ...input.authors.map((author) => author.displayName),
+    ]
       .filter(Boolean)
       .join(" "),
   );
   const statements: D1PreparedStatement[] = [
     c.env.DB.prepare(
       `INSERT INTO papers (
-        id,user_id,library_id,title,abstract,publication_year,publication_date,venue,volume,issue,pages,publisher,
+        id,user_id,library_id,title,abstract,summary,publication_year,publication_date,venue,volume,issue,pages,publisher,
         language,paper_type,status,reading_status,priority,rating,read_progress,source_url,metadata_state,search_text,
         note_markdown,version,last_opened_at,created_at,updated_at,deleted_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,NULL,?,?,NULL)`,
+      ) VALUES (
+        ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+      )`,
     ).bind(
       id,
       userId,
       c.get("libraryId"),
       input.title,
       input.abstract ?? null,
+      input.summary ?? null,
       input.publicationYear ?? null,
       input.publicationDate ?? null,
       input.venue ?? null,
@@ -681,8 +693,11 @@ papersRoutes.post("/", async (c) => {
       input.metadataState,
       searchText,
       input.noteMarkdown ?? null,
+      1,
+      null,
       now,
       now,
+      null,
     ),
   ];
   const providedFields = new Set(Object.keys(suppliedFields));
@@ -838,6 +853,7 @@ papersRoutes.patch("/:paperId", async (c) => {
   if (
     "title" in input ||
     "abstract" in input ||
+    "summary" in input ||
     "venue" in input ||
     "authors" in input ||
     "noteMarkdown" in input
@@ -846,13 +862,16 @@ papersRoutes.patch("/:paperId", async (c) => {
       (author) => author.displayName ?? "",
     );
     assignments.push("search_text = ?");
+    const nextSummary = "summary" in input ? input.summary : existing.summary;
+    const nextNoteMarkdown = "noteMarkdown" in input ? input.noteMarkdown : existing.note_markdown;
     values.push(
       normalizeComparableText(
         [
           input.title ?? existing.title,
           input.abstract ?? existing.abstract,
+          nextSummary,
           input.venue ?? existing.venue,
-          input.noteMarkdown ?? existing.note_markdown,
+          nextNoteMarkdown,
           ...(input.authors?.map((author) => author.displayName) ?? existingAuthors),
         ]
           .filter(Boolean)

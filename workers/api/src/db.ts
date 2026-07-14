@@ -88,6 +88,7 @@ export function paperFromRow(row: SqlRow): Record<string, unknown> {
     libraryId: row.library_id ?? null,
     title: row.title,
     abstract: row.abstract ?? null,
+    summary: row.summary ?? null,
     publicationYear: row.publication_year ?? null,
     publicationDate: row.publication_date ?? null,
     venue: row.venue ?? null,

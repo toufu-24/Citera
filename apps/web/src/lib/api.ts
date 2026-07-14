@@ -43,6 +43,7 @@ export interface PaperFile {
 export interface PaperListItem {
   id: string;
   title: string;
+  summary: string | null;
   authors: Array<{ id?: string; displayName: string }>;
   publicationYear: number | null;
   publicationDate: string | null;

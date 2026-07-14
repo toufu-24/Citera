@@ -101,16 +101,21 @@ test("owner can add, upload, read, annotate, search, and export a paper", async 
   await expect(page.locator(".pdf-stage canvas")).toHaveCount(4);
 
   await page.getByRole("button", { name: "論文情報に戻る" }).click();
-  await page.getByRole("tab", { name: "メモ" }).click();
+  await page.getByRole("tab", { name: "コメント" }).click();
   await page
-    .getByPlaceholder("この論文についてメモを残す…")
+    .getByPlaceholder("この論文について気づいたこと、研究との関係など…")
     .fill("**重要:** 再現実験を行う。\n\n- dataset を確認");
   await page.getByRole("button", { name: "保存" }).click();
-  await expect(page.locator(".markdown-body")).toContainText("再現実験を行う");
+  await page.getByRole("tab", { name: "概要" }).click();
+  await page.getByLabel("一言要約").fill("再現実験の設計と評価方法を確認する論文");
+  await page.getByRole("button", { name: "保存" }).click();
 
   await page.getByRole("link", { name: "ライブラリ" }).first().click();
   await page.getByLabel("論文を検索").fill(title);
   await expect(page.getByRole("link", { name: title })).toBeVisible();
+  await expect(page.getByRole("row").filter({ hasText: title })).toContainText(
+    "再現実験の設計と評価方法を確認する論文",
+  );
 
   const row = page.getByRole("row").filter({ hasText: title });
   await row.getByRole("checkbox").check();

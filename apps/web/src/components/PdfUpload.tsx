@@ -20,10 +20,6 @@ export function PdfUpload({ paperId, onComplete }: PdfUploadProps) {
     "idle" | "hashing" | "uploading" | "verifying" | "done" | "error"
   >("idle");
   const [error, setError] = useState<string | null>(null);
-  const [fileKind, setFileKind] = useState<"fulltext" | "translation" | "bilingual" | "supplement" | "other">("fulltext");
-  const [languageCode, setLanguageCode] = useState("");
-  const [label, setLabel] = useState("");
-  const [isDefault, setIsDefault] = useState(false);
 
   async function upload(file: File) {
     setRetryFile(file);
@@ -47,10 +43,7 @@ export function PdfUpload({ paperId, onComplete }: PdfUploadProps) {
         mediaType: "application/pdf",
         sha256,
         originalName: file.name,
-        fileKind,
-        languageCode: languageCode || null,
-        label: label.trim() || null,
-        isDefault,
+        fileKind: "fulltext",
       });
       if (ticket.duplicate && ticket.uploadState === "verified") {
         setProgress(100);
@@ -107,28 +100,6 @@ export function PdfUpload({ paperId, onComplete }: PdfUploadProps) {
       />
       {state === "idle" || state === "error" ? (
         <>
-          <div className="pdf-upload-options">
-            <select value={fileKind} onChange={(event) => setFileKind(event.target.value as typeof fileKind)} aria-label="PDFの種類">
-              <option value="fulltext">本文</option>
-              <option value="translation">翻訳版</option>
-              <option value="bilingual">対訳版</option>
-              <option value="supplement">補足資料</option>
-              <option value="other">その他</option>
-            </select>
-            <select value={languageCode} onChange={(event) => setLanguageCode(event.target.value)} aria-label="PDFの言語">
-              <option value="">言語未設定</option>
-              <option value="ja">日本語</option>
-              <option value="en">英語</option>
-              <option value="de">ドイツ語</option>
-              <option value="fr">フランス語</option>
-              <option value="zh-Hans">中国語（簡体）</option>
-              <option value="zh-Hant">中国語（繁体）</option>
-            </select>
-            <input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="表示名（任意）" aria-label="PDFの表示名" />
-            <label>
-              <input type="checkbox" checked={isDefault} onChange={(event) => setIsDefault(event.target.checked)} /> 既定
-            </label>
-          </div>
           <button
             type="button"
             className="button secondary compact"
