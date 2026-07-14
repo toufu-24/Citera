@@ -1,13 +1,32 @@
 import { expect, test } from "@playwright/test";
 
 function createMinimalPdf(): Buffer {
-  const objects = [
-    "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
-    "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
-    "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>\nendobj\n",
-    "4 0 obj\n<< /Length 58 >>\nstream\nBT /F1 18 Tf 72 720 Td (Citera integration PDF) Tj ET\nendstream\nendobj\n",
-    "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
-  ];
+  const pageCount = 8;
+  const firstPageObject = 3;
+  const firstContentObject = firstPageObject + pageCount;
+  const fontObject = firstContentObject + pageCount;
+  const objects = ["1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"];
+  const pageReferences = Array.from(
+    { length: pageCount },
+    (_, index) => `${firstPageObject + index} 0 R`,
+  ).join(" ");
+  objects.push(
+    `2 0 obj\n<< /Type /Pages /Kids [${pageReferences}] /Count ${pageCount} >>\nendobj\n`,
+  );
+  for (let index = 0; index < pageCount; index += 1) {
+    objects.push(
+      `${firstPageObject + index} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${fontObject} 0 R >> >> /Contents ${firstContentObject + index} 0 R >>\nendobj\n`,
+    );
+  }
+  for (let index = 0; index < pageCount; index += 1) {
+    const stream = `BT /F1 18 Tf 72 720 Td (Citera integration PDF page ${index + 1}) Tj ET\n`;
+    objects.push(
+      `${firstContentObject + index} 0 obj\n<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}endstream\nendobj\n`,
+    );
+  }
+  objects.push(
+    `${fontObject} 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n`,
+  );
   let body = "%PDF-1.4\n";
   const offsets = [0];
   for (const object of objects) {
@@ -33,7 +52,7 @@ test("owner can add, upload, read, annotate, search, and export a paper", async 
 
   await page.getByRole("button", { name: "論文を追加" }).first().click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByLabel("タイトル *").fill(title);
+  await dialog.getByLabel("タイトル（DOI入力時は自動取得）").fill(title);
   await dialog.getByLabel("著者").fill("Ada Lovelace, Alan Turing");
   await dialog.getByLabel("出版年").fill("2026");
   await dialog.getByLabel("掲載誌・会議").fill("Citera Research Notes");
@@ -41,13 +60,44 @@ test("owner can add, upload, read, annotate, search, and export a paper", async 
   await expect(page.getByRole("link", { name: title })).toBeVisible();
 
   await page.getByRole("link", { name: title }).click();
-  await expect(page.getByRole("heading", { name: title })).toBeVisible();
+  await expect(page.locator(".detail-breadcrumb strong")).toHaveText(title);
   await page.locator('.pdf-upload input[type="file"]').setInputFiles({
     name: "citera-e2e.pdf",
     mimeType: "application/pdf",
     buffer: createMinimalPdf(),
   });
-  await expect(page.locator(".pdf-stage canvas")).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator(".pdf-stage canvas").first()).toBeVisible({ timeout: 20_000 });
+
+  for (const viewport of [
+    { width: 320, height: 720 },
+    { width: 768, height: 1024 },
+    { width: 1024, height: 768 },
+    { width: 1440, height: 900 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await expect
+      .poll(async () => {
+        const canvasBox = await page.locator(".pdf-stage canvas").first().boundingBox();
+        return canvasBox ? canvasBox.width / canvasBox.height : 0;
+      })
+      .toBeCloseTo(612 / 792, 3);
+    await expect
+      .poll(() =>
+        page.locator(".pdf-stage").evaluate((stage) => stage.scrollWidth <= stage.clientWidth + 1),
+      )
+      .toBeTruthy();
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    ).toBeTruthy();
+  }
+
+  await expect(page.locator(".pdf-page-shell")).toHaveCount(8);
+  await expect(page.locator(".pdf-stage canvas")).toHaveCount(4);
+  const pageNumberInput = page.getByLabel("ページ番号");
+  await pageNumberInput.fill("8");
+  await pageNumberInput.press("Enter");
+  await expect(page.getByRole("img", { name: `${title}、8 ページ目` })).toBeVisible();
+  await expect(page.locator(".pdf-stage canvas")).toHaveCount(4);
 
   await page
     .getByPlaceholder("この論文についてメモを残す…")

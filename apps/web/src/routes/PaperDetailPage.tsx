@@ -18,6 +18,7 @@ import {
   Star,
   Tag,
   Trash2,
+  X,
 } from "lucide-react";
 import { marked } from "marked";
 import { useEffect, useMemo, useState } from "react";
@@ -49,11 +50,13 @@ function NoteCard({
   note,
   onSave,
   onDelete,
+  onPageSelect,
   saving,
 }: {
   note: NoteRecord;
   onSave: (contentMarkdown: string) => void;
   onDelete: () => void;
+  onPageSelect?: (() => void) | undefined;
   saving: boolean;
 }) {
   const [editing, setEditing] = useState(false);
@@ -66,15 +69,26 @@ function NoteCard({
   return (
     <article className="note-card">
       <header>
-        <span className={`note-kind note-${note.noteType}`}>
-          {note.noteType === "page"
-            ? `p. ${note.pageNumber ?? "—"}`
-            : note.noteType === "todo"
-              ? "TODO"
-              : note.noteType === "summary"
-                ? "要約"
-                : "メモ"}
-        </span>
+        {note.noteType === "page" && onPageSelect ? (
+          <button
+            type="button"
+            className="note-kind note-page note-page-link"
+            onClick={onPageSelect}
+            aria-label={`${note.pageNumber ?? "不明"}ページへ移動`}
+          >
+            p. {note.pageNumber ?? "—"}
+          </button>
+        ) : (
+          <span className={`note-kind note-${note.noteType}`}>
+            {note.noteType === "page"
+              ? `p. ${note.pageNumber ?? "—"}`
+              : note.noteType === "todo"
+                ? "TODO"
+                : note.noteType === "summary"
+                  ? "要約"
+                  : "メモ"}
+          </span>
+        )}
         <time dateTime={note.updatedAt}>
           {new Intl.DateTimeFormat("ja-JP", {
             month: "short",
@@ -131,6 +145,15 @@ export function PaperDetailPage() {
   const queryClient = useQueryClient();
   const [currentPage, setCurrentPage] = useState(1);
   const [mobileTab, setMobileTab] = useState<"pdf" | "details">("pdf");
+  const [inspectorTab, setInspectorTab] = useState<"notes" | "info" | "outline">("notes");
+  const [inspectorOpen, setInspectorOpen] = useState(() => {
+    try {
+      return window.localStorage.getItem("citera.inspector-open") !== "false";
+    } catch {
+      return true;
+    }
+  });
+  const [focusMode, setFocusMode] = useState(false);
   const [editing, setEditing] = useState(false);
   const [noteType, setNoteType] = useState<NoteRecord["noteType"]>("general");
   const [noteContent, setNoteContent] = useState("");
@@ -242,16 +265,38 @@ export function PaperDetailPage() {
 
   const files = paper.data?.files ?? [];
   const orderedFiles = useMemo(
-    () => [...files].sort(
-      (left, right) =>
-        Number(Boolean(right.isDefault)) - Number(Boolean(left.isDefault)) ||
-        (left.sortOrder ?? 0) - (right.sortOrder ?? 0),
-    ),
+    () =>
+      [...files].sort(
+        (left, right) =>
+          Number(Boolean(right.isDefault)) - Number(Boolean(left.isDefault)) ||
+          (left.sortOrder ?? 0) - (right.sortOrder ?? 0),
+      ),
     [files],
+  );
+  const orderedNotes = useMemo(
+    () =>
+      [...(paper.data?.notes ?? [])].sort(
+        (left, right) =>
+          Number(right.noteType === "page" && right.pageNumber === currentPage) -
+            Number(left.noteType === "page" && left.pageNumber === currentPage) ||
+          new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
+      ),
+    [currentPage, paper.data?.notes],
   );
   useEffect(() => {
     if (paper.data && paperNote === null) setPaperNote(paper.data.noteMarkdown ?? "");
   }, [paper.data, paperNote]);
+  useEffect(() => {
+    document.body.classList.toggle("citera-focus-mode", focusMode);
+    return () => document.body.classList.remove("citera-focus-mode");
+  }, [focusMode]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("citera.inspector-open", String(inspectorOpen));
+    } catch {
+      // Local layout preferences are optional.
+    }
+  }, [inspectorOpen]);
   useEffect(() => {
     if (!selectedFileId || !files.some((file) => file.id === selectedFileId)) {
       setSelectedFileId(
@@ -288,7 +333,10 @@ export function PaperDetailPage() {
   }
 
   const data = paper.data;
-  const pdf = files.find((file) => file.id === selectedFileId) ?? orderedFiles.find((file) => file.uploadState === "verified") ?? orderedFiles[0];
+  const pdf =
+    files.find((file) => file.id === selectedFileId) ??
+    orderedFiles.find((file) => file.uploadState === "verified") ??
+    orderedFiles[0];
   const doi = data.identifiers.find(
     (identifier) => (identifier.identifierType ?? identifier.type) === "doi",
   )?.normalizedValue;
@@ -314,7 +362,7 @@ export function PaperDetailPage() {
   }
 
   return (
-    <div className="paper-detail-page">
+    <div className={`paper-detail-page ${focusMode ? "is-focus-mode" : ""}`}>
       <header className="detail-topbar">
         <Link to="/library" className="back-link">
           <ArrowLeft size={17} /> ライブラリ
@@ -393,411 +441,494 @@ export function PaperDetailPage() {
         </button>
       </div>
 
-      <div className="detail-split">
+      <div className={`detail-split ${inspectorOpen ? "inspector-open" : "inspector-closed"}`}>
         <div
           role="tabpanel"
           className={mobileTab === "pdf" ? "pdf-pane mobile-active" : "pdf-pane"}
         >
-          <PdfViewer fileId={pdf?.id ?? null} title={data.title} onPageChange={setCurrentPage} />
+          <PdfViewer
+            fileId={pdf?.id ?? null}
+            title={data.title}
+            page={currentPage}
+            onPageChange={setCurrentPage}
+            inspectorOpen={inspectorOpen}
+            onToggleInspector={() => setInspectorOpen((value) => !value)}
+            focusMode={focusMode}
+            onToggleFocus={() => setFocusMode((value) => !value)}
+            onCreatePageNote={(pageNumber) => {
+              setCurrentPage(pageNumber);
+              setNoteType("page");
+              setInspectorTab("notes");
+              setInspectorOpen(true);
+              setFocusMode(false);
+            }}
+          />
         </div>
         <aside
           role="tabpanel"
           className={mobileTab === "details" ? "metadata-pane mobile-active" : "metadata-pane"}
         >
-          {data.metadataState === "needs_review" && (
-            <div className="review-banner">
-              <Sparkles size={18} />
-              <div>
-                <strong>書誌情報の確認が必要です</strong>
-                <p>
-                  {duplicates.data?.length
-                    ? `${duplicates.data.length} 件の類似論文があります。`
-                    : "複数の情報源から候補が見つかりました。"}
-                </p>
-              </div>
-            </div>
-          )}
-          <section className="paper-identity">
-            <div className="paper-meta-line">
-              <label className={`status-badge status-${data.status}`}>
-                <span className="sr-only">状態</span>
-                <select
-                  value={data.status}
-                  onChange={(event) => update.mutate({ status: event.target.value })}
-                  disabled={update.isPending}
-                >
-                  {Object.entries(statusLabel).map(([value, label]) => (
-                    <option key={value} value={value}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="status-badge status-reading">
-                <span className="sr-only">読書状態</span>
-                <select
-                  value={data.readingStatus ?? "unread"}
-                  onChange={(event) => update.mutate({ readingStatus: event.target.value })}
-                  disabled={update.isPending}
-                >
-                  {Object.entries(readingStatusLabel).map(([value, label]) => (
-                    <option key={value} value={value}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <span>{data.publicationYear ?? "出版年不明"}</span>
-              <span>{data.venue ?? "掲載先未設定"}</span>
-            </div>
-            <h1>{data.title}</h1>
-            <p className="detail-authors">
-              {data.authors.map((author) => author.displayName).join(", ") || "著者未設定"}
-            </p>
-            <div className="identifier-row">
-              {doi && (
-                <a href={`https://doi.org/${doi}`} target="_blank" rel="noreferrer">
-                  DOI {doi}
-                  <ExternalLink size={13} />
-                </a>
-              )}
-              {arxivId && (
-                <a href={`https://arxiv.org/abs/${arxivId}`} target="_blank" rel="noreferrer">
-                  arXiv {arxivId}
-                  <ExternalLink size={13} />
-                </a>
-              )}
-            </div>
-            <div className="rating-row" aria-label="評価">
-              {[1, 2, 3, 4, 5].map((value) => (
-                <button
-                  type="button"
-                  key={value}
-                  onClick={() => update.mutate({ rating: data.rating === value ? null : value })}
-                  disabled={update.isPending}
-                  aria-label={`${value}つ星`}
-                >
-                  <Star size={19} fill={value <= (data.rating ?? 0) ? "currentColor" : "none"} />
-                </button>
-              ))}
-            </div>
-            <div className="paper-tags">
-              {data.tags.map((tag) => (
-                <span className="tag-chip" key={tag.id}>
-                  <i style={{ background: tag.color ?? "#74856f" }} />
-                  {tag.name}
-                </span>
-              ))}
-              <button
-                type="button"
-                className="tag-add"
-                aria-expanded={tagEditorOpen}
-                onClick={() => setTagEditorOpen((value) => !value)}
-              >
-                <Tag size={14} /> 追加
-              </button>
-              {tagEditorOpen && (
-                <div className="relation-editor" role="group" aria-label="タグを編集">
-                  {availableTags.isPending ? (
-                    <span className="relation-message">タグを読み込んでいます…</span>
-                  ) : availableTags.isError ? (
-                    <span className="form-error" role="alert">
-                      タグを読み込めませんでした。
-                    </span>
-                  ) : availableTags.data?.length ? (
-                    availableTags.data.map((tag) => {
-                      const attached = data.tags.some((current) => current.id === tag.id);
-                      return (
-                        <label key={tag.id}>
-                          <input
-                            type="checkbox"
-                            checked={attached}
-                            disabled={toggleTag.isPending}
-                            onChange={() => toggleTag.mutate({ tagId: tag.id, attached })}
-                          />
-                          <i style={{ background: tag.color ?? "#74856f" }} />
-                          {tag.name}
-                        </label>
-                      );
-                    })
-                  ) : (
-                    <span className="relation-message">利用できるタグがありません。</span>
-                  )}
-                </div>
-              )}
-            </div>
-            <div className="collection-row">
-              <BookMarked size={16} />
-              <span>
-                {data.collections.map((collection) => collection.name).join(" / ") ||
-                  "コレクション未設定"}
-              </span>
-              <button
-                type="button"
-                aria-label="コレクションを編集"
-                aria-expanded={collectionEditorOpen}
-                onClick={() => setCollectionEditorOpen((value) => !value)}
-              >
-                <FolderPlus size={16} />
-              </button>
-            </div>
-            {collectionEditorOpen && (
-              <div
-                className="relation-editor collection-editor"
-                role="group"
-                aria-label="コレクションを編集"
-              >
-                {availableCollections.isPending ? (
-                  <span className="relation-message">コレクションを読み込んでいます…</span>
-                ) : availableCollections.isError ? (
-                  <span className="form-error" role="alert">
-                    コレクションを読み込めませんでした。
-                  </span>
-                ) : availableCollections.data?.length ? (
-                  availableCollections.data.map((collection) => {
-                    const attached = data.collections.some(
-                      (current) => current.id === collection.id,
-                    );
-                    return (
-                      <label key={collection.id}>
-                        <input
-                          type="checkbox"
-                          checked={attached}
-                          disabled={toggleCollection.isPending}
-                          onChange={() =>
-                            toggleCollection.mutate({ collectionId: collection.id, attached })
-                          }
-                        />
-                        {collection.name}
-                      </label>
-                    );
-                  })
-                ) : (
-                  <span className="relation-message">利用できるコレクションがありません。</span>
-                )}
-              </div>
-            )}
-            {(toggleTag.error || toggleCollection.error) && (
-              <p className="form-error" role="alert">
-                分類を更新できませんでした。
-              </p>
-            )}
-            {update.error && (
-              <p className="form-error" role="alert">
-                変更を保存できませんでした。再読み込みしてお試しください。
-              </p>
-            )}
-          </section>
-
-          <section className="metadata-section">
-            <header>
-              <h2>書誌情報</h2>
-              <div>
-                <button
-                  type="button"
-                  className="text-icon-button"
-                  onClick={() => refresh.mutate()}
-                  disabled={refresh.isPending}
-                >
-                  <RefreshCw size={15} className={refresh.isPending ? "spin" : ""} /> 再取得
-                </button>
-                <button
-                  type="button"
-                  className="text-icon-button"
-                  onClick={() => setEditing((value) => !value)}
-                >
-                  <Pencil size={15} /> 編集
-                </button>
-              </div>
-            </header>
-            {editing ? (
-              <form className="metadata-form" onSubmit={submitMetadata}>
-                <label>
-                  タイトル
-                  <input name="title" defaultValue={data.title} required />
-                </label>
-                <div className="form-grid">
-                  <label>
-                    出版年
-                    <input
-                      name="publicationYear"
-                      type="number"
-                      min={1000}
-                      max={9999}
-                      defaultValue={data.publicationYear ?? ""}
-                    />
-                  </label>
-                  <label>
-                    掲載誌・会議
-                    <input name="venue" defaultValue={data.venue ?? ""} />
-                  </label>
-                </div>
-                <label>
-                  元ページ
-                  <input name="sourceUrl" type="url" defaultValue={data.sourceUrl ?? ""} />
-                </label>
-                <label>
-                  要旨
-                  <textarea name="abstract" rows={6} defaultValue={data.abstract ?? ""} />
-                </label>
-                <div className="form-actions">
-                  <button
-                    type="button"
-                    className="button secondary compact"
-                    onClick={() => setEditing(false)}
-                  >
-                    キャンセル
-                  </button>
-                  <button className="button primary compact" disabled={update.isPending}>
-                    <Save size={15} /> 保存
-                  </button>
-                </div>
-              </form>
-            ) : (
-              <div className="metadata-summary">
-                {data.abstract ? (
-                  <p>{data.abstract}</p>
-                ) : (
-                  <p className="muted-copy">
-                    要旨はまだありません。書誌情報を再取得するか、編集して追加できます。
-                  </p>
-                )}
-                {data.sourceUrl && (
-                  <a href={data.sourceUrl} target="_blank" rel="noreferrer">
-                    <ExternalLink size={14} /> 元ページを開く
-                  </a>
-                )}
-              </div>
-            )}
-            {refresh.error && (
-              <p className="form-error" role="alert">
-                書誌情報の再取得を開始できませんでした。
-              </p>
-            )}
-          </section>
-
-          <section className="notes-section">
-            <header>
-              <div>
-                <p className="eyebrow">ANNOTATIONS</p>
-                <h2>
-                  メモ <span>{data.notes.length}</span>
-                </h2>
-              </div>
-            </header>
-            <form
-              className="note-composer"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (noteContent.trim()) addNote.mutate();
-              }}
-            >
-              <div className="note-type-row">
-                <select
-                  value={noteType}
-                  onChange={(event) => setNoteType(event.target.value as NoteRecord["noteType"])}
-                  aria-label="メモ種別"
-                >
-                  <option value="general">全体メモ</option>
-                  <option value="page">ページメモ（p. {currentPage}）</option>
-                  <option value="summary">要約</option>
-                  <option value="todo">TODO</option>
-                </select>
-                <span>Markdown</span>
-              </div>
-              <textarea
-                value={noteContent}
-                onChange={(event) => setNoteContent(event.target.value)}
-                onKeyDown={(event) => {
-                  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-                    event.preventDefault();
-                    event.currentTarget.form?.requestSubmit();
-                  }
-                }}
-                rows={4}
-                aria-label="新しいメモ"
-                placeholder={
-                  noteType === "page"
-                    ? `ページ ${currentPage} の気づきを残す…`
-                    : "この論文についてメモを残す…"
-                }
-              />
-              <footer>
-                <span>⌘ + Enter で保存</span>
-                <button
-                  className="button primary compact"
-                  disabled={!noteContent.trim() || addNote.isPending}
-                >
-                  <Check size={15} /> 保存
-                </button>
-              </footer>
-            </form>
-            {addNote.error && (
-              <p className="form-error" role="alert">
-                メモを保存できませんでした。
-              </p>
-            )}
-            <div className="note-list">
-              {data.notes.length ? (
-                data.notes.map((note) => (
-                  <NoteCard
-                    key={note.id}
-                    note={note}
-                    saving={editNote.isPending}
-                    onSave={(contentMarkdown) => editNote.mutate({ note, contentMarkdown })}
-                    onDelete={() => {
-                      if (window.confirm("このメモを削除しますか？")) deleteNote.mutate(note);
-                    }}
-                  />
-                ))
-              ) : (
-                <div className="notes-empty">
-                  <FileText size={20} />
-                  <p>まだメモはありません。読みながら気づきを残しましょう。</p>
-                </div>
-              )}
-            </div>
-          </section>
-
-          <section className="metadata-section paper-note-section">
-            <header>
-              <div>
-                <p className="eyebrow">PAPER NOTE</p>
-                <h2>Markdownメモ</h2>
-              </div>
-              <span className="muted-copy">論文ごとに1件</span>
-            </header>
-            <textarea
-              value={paperNote ?? ""}
-              onChange={(event) => setPaperNote(event.target.value)}
-              onBlur={() => {
-                if (paperNote !== (data.noteMarkdown ?? "")) {
-                  update.mutate({ noteMarkdown: paperNote ?? null });
-                }
-              }}
-              rows={8}
-              placeholder="要点、重要な数式、実験条件、研究との関連など…"
-              aria-label="論文のMarkdownメモ"
-            />
-            <p className="muted-copy">入力欄からフォーカスを外すと保存します。</p>
-          </section>
-
-          <section className="danger-zone">
+          <div className="inspector-tabs" role="tablist" aria-label="論文サイドパネル">
             <button
               type="button"
-              disabled={deletePaper.isPending}
-              onClick={() => {
-                if (window.confirm("この論文をゴミ箱へ移動しますか？")) deletePaper.mutate();
-              }}
+              role="tab"
+              aria-selected={inspectorTab === "notes"}
+              className={inspectorTab === "notes" ? "active" : ""}
+              onClick={() => setInspectorTab("notes")}
             >
-              <Trash2 size={15} /> {deletePaper.isPending ? "移動中…" : "ゴミ箱へ移動"}
+              メモ
             </button>
-            {deletePaper.error && (
-              <p className="form-error" role="alert">
-                論文を削除できませんでした。
-              </p>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={inspectorTab === "info"}
+              className={inspectorTab === "info" ? "active" : ""}
+              onClick={() => setInspectorTab("info")}
+            >
+              論文情報
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={inspectorTab === "outline"}
+              className={inspectorTab === "outline" ? "active" : ""}
+              onClick={() => setInspectorTab("outline")}
+            >
+              目次
+            </button>
+            <button
+              type="button"
+              className="icon-button inspector-close"
+              onClick={() => setInspectorOpen(false)}
+              aria-label="情報パネルを閉じる"
+              title="情報パネルを閉じる"
+            >
+              <X size={16} />
+            </button>
+          </div>
+          <div className="inspector-content">
+            {inspectorTab === "info" ? (
+              <>
+                {data.metadataState === "needs_review" && (
+                  <div className="review-banner">
+                    <Sparkles size={18} />
+                    <div>
+                      <strong>書誌情報の確認が必要です</strong>
+                      <p>
+                        {duplicates.data?.length
+                          ? `${duplicates.data.length} 件の類似論文があります。`
+                          : "複数の情報源から候補が見つかりました。"}
+                      </p>
+                    </div>
+                  </div>
+                )}
+                <section className="paper-identity">
+                  <div className="paper-meta-line">
+                    <label className={`status-badge status-${data.status}`}>
+                      <span className="sr-only">状態</span>
+                      <select
+                        value={data.status}
+                        onChange={(event) => update.mutate({ status: event.target.value })}
+                        disabled={update.isPending}
+                      >
+                        {Object.entries(statusLabel).map(([value, label]) => (
+                          <option key={value} value={value}>
+                            {label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="status-badge status-reading">
+                      <span className="sr-only">読書状態</span>
+                      <select
+                        value={data.readingStatus ?? "unread"}
+                        onChange={(event) => update.mutate({ readingStatus: event.target.value })}
+                        disabled={update.isPending}
+                      >
+                        {Object.entries(readingStatusLabel).map(([value, label]) => (
+                          <option key={value} value={value}>
+                            {label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <span>{data.publicationYear ?? "出版年不明"}</span>
+                    <span>{data.venue ?? "掲載先未設定"}</span>
+                  </div>
+                  <h1>{data.title}</h1>
+                  <p className="detail-authors">
+                    {data.authors.map((author) => author.displayName).join(", ") || "著者未設定"}
+                  </p>
+                  <div className="identifier-row">
+                    {doi && (
+                      <a href={`https://doi.org/${doi}`} target="_blank" rel="noreferrer">
+                        DOI {doi}
+                        <ExternalLink size={13} />
+                      </a>
+                    )}
+                    {arxivId && (
+                      <a href={`https://arxiv.org/abs/${arxivId}`} target="_blank" rel="noreferrer">
+                        arXiv {arxivId}
+                        <ExternalLink size={13} />
+                      </a>
+                    )}
+                  </div>
+                  <div className="rating-row" aria-label="評価">
+                    {[1, 2, 3, 4, 5].map((value) => (
+                      <button
+                        type="button"
+                        key={value}
+                        onClick={() =>
+                          update.mutate({ rating: data.rating === value ? null : value })
+                        }
+                        disabled={update.isPending}
+                        aria-label={`${value}つ星`}
+                      >
+                        <Star
+                          size={19}
+                          fill={value <= (data.rating ?? 0) ? "currentColor" : "none"}
+                        />
+                      </button>
+                    ))}
+                  </div>
+                  <div className="paper-tags">
+                    {data.tags.map((tag) => (
+                      <span className="tag-chip" key={tag.id}>
+                        <i style={{ background: tag.color ?? "#74856f" }} />
+                        {tag.name}
+                      </span>
+                    ))}
+                    <button
+                      type="button"
+                      className="tag-add"
+                      aria-expanded={tagEditorOpen}
+                      onClick={() => setTagEditorOpen((value) => !value)}
+                    >
+                      <Tag size={14} /> 追加
+                    </button>
+                    {tagEditorOpen && (
+                      <div className="relation-editor" role="group" aria-label="タグを編集">
+                        {availableTags.isPending ? (
+                          <span className="relation-message">タグを読み込んでいます…</span>
+                        ) : availableTags.isError ? (
+                          <span className="form-error" role="alert">
+                            タグを読み込めませんでした。
+                          </span>
+                        ) : availableTags.data?.length ? (
+                          availableTags.data.map((tag) => {
+                            const attached = data.tags.some((current) => current.id === tag.id);
+                            return (
+                              <label key={tag.id}>
+                                <input
+                                  type="checkbox"
+                                  checked={attached}
+                                  disabled={toggleTag.isPending}
+                                  onChange={() => toggleTag.mutate({ tagId: tag.id, attached })}
+                                />
+                                <i style={{ background: tag.color ?? "#74856f" }} />
+                                {tag.name}
+                              </label>
+                            );
+                          })
+                        ) : (
+                          <span className="relation-message">利用できるタグがありません。</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className="collection-row">
+                    <BookMarked size={16} />
+                    <span>
+                      {data.collections.map((collection) => collection.name).join(" / ") ||
+                        "コレクション未設定"}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label="コレクションを編集"
+                      aria-expanded={collectionEditorOpen}
+                      onClick={() => setCollectionEditorOpen((value) => !value)}
+                    >
+                      <FolderPlus size={16} />
+                    </button>
+                  </div>
+                  {collectionEditorOpen && (
+                    <div
+                      className="relation-editor collection-editor"
+                      role="group"
+                      aria-label="コレクションを編集"
+                    >
+                      {availableCollections.isPending ? (
+                        <span className="relation-message">コレクションを読み込んでいます…</span>
+                      ) : availableCollections.isError ? (
+                        <span className="form-error" role="alert">
+                          コレクションを読み込めませんでした。
+                        </span>
+                      ) : availableCollections.data?.length ? (
+                        availableCollections.data.map((collection) => {
+                          const attached = data.collections.some(
+                            (current) => current.id === collection.id,
+                          );
+                          return (
+                            <label key={collection.id}>
+                              <input
+                                type="checkbox"
+                                checked={attached}
+                                disabled={toggleCollection.isPending}
+                                onChange={() =>
+                                  toggleCollection.mutate({ collectionId: collection.id, attached })
+                                }
+                              />
+                              {collection.name}
+                            </label>
+                          );
+                        })
+                      ) : (
+                        <span className="relation-message">
+                          利用できるコレクションがありません。
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {(toggleTag.error || toggleCollection.error) && (
+                    <p className="form-error" role="alert">
+                      分類を更新できませんでした。
+                    </p>
+                  )}
+                  {update.error && (
+                    <p className="form-error" role="alert">
+                      変更を保存できませんでした。再読み込みしてお試しください。
+                    </p>
+                  )}
+                </section>
+
+                <section className="metadata-section">
+                  <header>
+                    <h2>書誌情報</h2>
+                    <div>
+                      <button
+                        type="button"
+                        className="text-icon-button"
+                        onClick={() => refresh.mutate()}
+                        disabled={refresh.isPending}
+                      >
+                        <RefreshCw size={15} className={refresh.isPending ? "spin" : ""} /> 再取得
+                      </button>
+                      <button
+                        type="button"
+                        className="text-icon-button"
+                        onClick={() => setEditing((value) => !value)}
+                      >
+                        <Pencil size={15} /> 編集
+                      </button>
+                    </div>
+                  </header>
+                  {editing ? (
+                    <form className="metadata-form" onSubmit={submitMetadata}>
+                      <label>
+                        タイトル
+                        <input name="title" defaultValue={data.title} required />
+                      </label>
+                      <div className="form-grid">
+                        <label>
+                          出版年
+                          <input
+                            name="publicationYear"
+                            type="number"
+                            min={1000}
+                            max={9999}
+                            defaultValue={data.publicationYear ?? ""}
+                          />
+                        </label>
+                        <label>
+                          掲載誌・会議
+                          <input name="venue" defaultValue={data.venue ?? ""} />
+                        </label>
+                      </div>
+                      <label>
+                        元ページ
+                        <input name="sourceUrl" type="url" defaultValue={data.sourceUrl ?? ""} />
+                      </label>
+                      <label>
+                        要旨
+                        <textarea name="abstract" rows={6} defaultValue={data.abstract ?? ""} />
+                      </label>
+                      <div className="form-actions">
+                        <button
+                          type="button"
+                          className="button secondary compact"
+                          onClick={() => setEditing(false)}
+                        >
+                          キャンセル
+                        </button>
+                        <button className="button primary compact" disabled={update.isPending}>
+                          <Save size={15} /> 保存
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    <div className="metadata-summary">
+                      {data.abstract ? (
+                        <p>{data.abstract}</p>
+                      ) : (
+                        <p className="muted-copy">
+                          要旨はまだありません。書誌情報を再取得するか、編集して追加できます。
+                        </p>
+                      )}
+                      {data.sourceUrl && (
+                        <a href={data.sourceUrl} target="_blank" rel="noreferrer">
+                          <ExternalLink size={14} /> 元ページを開く
+                        </a>
+                      )}
+                    </div>
+                  )}
+                  {refresh.error && (
+                    <p className="form-error" role="alert">
+                      書誌情報の再取得を開始できませんでした。
+                    </p>
+                  )}
+                </section>
+
+                <section className="danger-zone">
+                  <button
+                    type="button"
+                    disabled={deletePaper.isPending}
+                    onClick={() => {
+                      if (window.confirm("この論文をゴミ箱へ移動しますか？")) deletePaper.mutate();
+                    }}
+                  >
+                    <Trash2 size={15} /> {deletePaper.isPending ? "移動中…" : "ゴミ箱へ移動"}
+                  </button>
+                  {deletePaper.error && (
+                    <p className="form-error" role="alert">
+                      論文を削除できませんでした。
+                    </p>
+                  )}
+                </section>
+              </>
+            ) : inspectorTab === "notes" ? (
+              <>
+                <section className="notes-section">
+                  <header>
+                    <div>
+                      <p className="eyebrow">ANNOTATIONS</p>
+                      <h2>
+                        <span className="current-page-note-title">ページ {currentPage} のメモ</span>
+                        <span className="note-count">{data.notes.length}</span>
+                      </h2>
+                    </div>
+                  </header>
+                  <form
+                    className="note-composer"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      if (noteContent.trim()) addNote.mutate();
+                    }}
+                  >
+                    <div className="note-type-row">
+                      <select
+                        value={noteType}
+                        onChange={(event) =>
+                          setNoteType(event.target.value as NoteRecord["noteType"])
+                        }
+                        aria-label="メモ種別"
+                      >
+                        <option value="general">全体メモ</option>
+                        <option value="page">ページメモ（p. {currentPage}）</option>
+                        <option value="summary">要約</option>
+                        <option value="todo">TODO</option>
+                      </select>
+                      <span>Markdown</span>
+                    </div>
+                    <textarea
+                      value={noteContent}
+                      onChange={(event) => setNoteContent(event.target.value)}
+                      onKeyDown={(event) => {
+                        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                          event.preventDefault();
+                          event.currentTarget.form?.requestSubmit();
+                        }
+                      }}
+                      rows={4}
+                      aria-label="新しいメモ"
+                      placeholder={
+                        noteType === "page"
+                          ? `ページ ${currentPage} の気づきを残す…`
+                          : "この論文についてメモを残す…"
+                      }
+                    />
+                    <footer>
+                      <span>⌘ + Enter で保存</span>
+                      <button
+                        className="button primary compact"
+                        disabled={!noteContent.trim() || addNote.isPending}
+                      >
+                        <Check size={15} /> 保存
+                      </button>
+                    </footer>
+                  </form>
+                  {addNote.error && (
+                    <p className="form-error" role="alert">
+                      メモを保存できませんでした。
+                    </p>
+                  )}
+                  <div className="note-list">
+                    {orderedNotes.length ? (
+                      orderedNotes.map((note) => (
+                        <NoteCard
+                          key={note.id}
+                          note={note}
+                          saving={editNote.isPending}
+                          onPageSelect={
+                            note.noteType === "page" && note.pageNumber
+                              ? () => setCurrentPage(note.pageNumber ?? 1)
+                              : undefined
+                          }
+                          onSave={(contentMarkdown) => editNote.mutate({ note, contentMarkdown })}
+                          onDelete={() => {
+                            if (window.confirm("このメモを削除しますか？")) deleteNote.mutate(note);
+                          }}
+                        />
+                      ))
+                    ) : (
+                      <div className="notes-empty">
+                        <FileText size={20} />
+                        <p>まだメモはありません。読みながら気づきを残しましょう。</p>
+                      </div>
+                    )}
+                  </div>
+                </section>
+
+                <section className="metadata-section paper-note-section">
+                  <header>
+                    <div>
+                      <p className="eyebrow">PAPER NOTE</p>
+                      <h2>Markdownメモ</h2>
+                    </div>
+                    <span className="muted-copy">論文ごとに1件</span>
+                  </header>
+                  <textarea
+                    value={paperNote ?? ""}
+                    onChange={(event) => setPaperNote(event.target.value)}
+                    onBlur={() => {
+                      if (paperNote !== (data.noteMarkdown ?? "")) {
+                        update.mutate({ noteMarkdown: paperNote ?? null });
+                      }
+                    }}
+                    rows={8}
+                    placeholder="要点、重要な数式、実験条件、研究との関連など…"
+                    aria-label="論文のMarkdownメモ"
+                  />
+                  <p className="muted-copy">入力欄からフォーカスを外すと保存します。</p>
+                </section>
+              </>
+            ) : (
+              <section className="outline-empty">
+                <FileText size={22} />
+                <h2>目次</h2>
+                <p>このPDFには表示できる目次情報がありません。</p>
+              </section>
             )}
-          </section>
+          </div>
         </aside>
       </div>
     </div>
