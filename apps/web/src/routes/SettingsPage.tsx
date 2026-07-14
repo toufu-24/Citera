@@ -543,10 +543,9 @@ export function SettingsPage() {
                     }))
                   }
                 >
-                  <option value="inbox">未整理</option>
+                  <option value="inbox">未着手</option>
                   <option value="reading">読書中</option>
                   <option value="read">読了</option>
-                  <option value="archived">アーカイブ</option>
                 </select>
               </label>
               <label className="full">

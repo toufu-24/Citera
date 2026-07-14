@@ -6,10 +6,14 @@ import {
   BookOpen,
   CheckCircle2,
   ChevronDown,
+  Copy,
   Download,
   FileText,
   Filter,
-  MoreHorizontal,
+  Folder,
+  FolderMinus,
+  FolderOpen,
+  FolderPlus,
   Plus,
   RotateCcw,
   Search,
@@ -22,15 +26,18 @@ import {
 } from "lucide-react";
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
-import { ApiRequestError, api, type PaperListItem } from "../lib/api";
+import { ActionMenu } from "../components/ActionMenu";
+import { ApiRequestError, api, type CollectionRecord, type PaperListItem } from "../lib/api";
+import { copyText } from "../lib/clipboard";
 import { db } from "../lib/database";
 import { parseCitationFile, resolveImportedTagIds } from "../lib/import";
 import { PaperDetailView } from "./PaperDetailPage";
 
 type StatusFilter = "all" | PaperListItem["status"] | "deleted";
+type PaperRowAction = "open" | "copy-bibtex" | "toggle-archive" | "trash" | "restore" | "rate";
 
 const statusLabel: Record<PaperListItem["status"], string> = {
-  inbox: "未整理",
+  inbox: "未着手",
   reading: "読書中",
   read: "読了",
   archived: "保管済み",
@@ -83,17 +90,38 @@ function duplicateDetailsFromError(error: unknown): {
   };
 }
 
+function collectionPath(collection: CollectionRecord, collections: CollectionRecord[]): string {
+  const byId = new Map(collections.map((item) => [item.id, item]));
+  const names = [collection.name];
+  const visited = new Set([collection.id]);
+  let parentId = collection.parentId;
+  while (parentId && !visited.has(parentId)) {
+    visited.add(parentId);
+    const parent = byId.get(parentId);
+    if (!parent) break;
+    names.unshift(parent.name);
+    parentId = parent.parentId;
+  }
+  return names.join(" / ");
+}
+
 function PaperRow({
   paper,
   checked,
   onCheck,
   onOpen,
+  onAction,
+  onRate,
+  actionPending,
   open,
 }: {
   paper: PaperListItem;
   checked: boolean;
   onCheck: (checked: boolean) => void;
   onOpen: (paperId: string) => void;
+  onAction: (paper: PaperListItem, action: PaperRowAction) => void;
+  onRate: (paper: PaperListItem, rating: number | null) => void;
+  actionPending: boolean;
   open: boolean;
 }) {
   return (
@@ -153,18 +181,88 @@ function PaperRow({
           {paper.tags.length > 2 && <span className="tag-more">+{paper.tags.length - 2}</span>}
         </div>
       </td>
+      <td>
+        <div className="collection-stack">
+          {paper.collections?.slice(0, 1).map((collection) => (
+            <span className="collection-chip" key={collection.id}>
+              <Folder size={12} /> {collection.name}
+            </span>
+          ))}
+          {(paper.collections?.length ?? 0) > 1 && (
+            <span className="tag-more">+{(paper.collections?.length ?? 0) - 1}</span>
+          )}
+        </div>
+      </td>
       <td className="icon-state-cell" aria-label={paper.hasPdf ? "PDFあり" : "PDFなし"}>
         {paper.hasPdf ? <FileText size={17} /> : <span>—</span>}
       </td>
-      <td className="rating-cell" aria-label={`評価 ${paper.rating ?? 0}`}>
-        <Star size={16} fill={paper.rating ? "currentColor" : "none"} />
-        {paper.rating ?? "—"}
+      <td className="rating-cell">
+        <div className="inline-rating" aria-label={`評価 ${paper.rating ?? 0} / 5`}>
+          {[1, 2, 3, 4, 5].map((value) => (
+            <button
+              type="button"
+              key={value}
+              className={value <= (paper.rating ?? 0) ? "active" : ""}
+              aria-label={`${paper.title}を${value}つ星に評価`}
+              title={`${value}つ星`}
+              disabled={actionPending}
+              onClick={() => onRate(paper, paper.rating === value ? null : value)}
+            >
+              <Star size={16} fill={value <= (paper.rating ?? 0) ? "currentColor" : "none"} />
+            </button>
+          ))}
+        </div>
       </td>
       <td className="date-cell">{formatDate(paper.updatedAt)}</td>
-      <td>
-        <button className="icon-button" aria-label="その他の操作">
-          <MoreHorizontal size={18} />
-        </button>
+      <td className="row-action-cell">
+        <ActionMenu
+          label={`${paper.title} のその他の操作`}
+          className="row-action-menu"
+          items={
+            paper.deletedAt
+              ? [
+                  {
+                    label: "ゴミ箱から復元",
+                    icon: <RotateCcw size={17} />,
+                    onSelect: () => onAction(paper, "restore"),
+                    disabled: actionPending,
+                  },
+                  {
+                    label: "BibTeXをコピー",
+                    icon: <Copy size={17} />,
+                    onSelect: () => onAction(paper, "copy-bibtex"),
+                    disabled: actionPending,
+                  },
+                ]
+              : [
+                  {
+                    label: "詳細を開く",
+                    icon: <BookOpen size={17} />,
+                    onSelect: () => onAction(paper, "open"),
+                  },
+                  {
+                    label: "BibTeXをコピー",
+                    icon: <Copy size={17} />,
+                    onSelect: () => onAction(paper, "copy-bibtex"),
+                    disabled: actionPending,
+                  },
+                  {
+                    label: paper.status === "archived" ? "未着手に戻す" : "保管済みにする",
+                    icon:
+                      paper.status === "archived" ? <RotateCcw size={17} /> : <Archive size={17} />,
+                    onSelect: () => onAction(paper, "toggle-archive"),
+                    disabled: actionPending,
+                  },
+                  {
+                    label: "ゴミ箱へ移動",
+                    icon: <Trash2 size={17} />,
+                    onSelect: () => onAction(paper, "trash"),
+                    disabled: actionPending,
+                    danger: true,
+                  },
+                ]
+          }
+        />
       </td>
     </tr>
   );
@@ -183,10 +281,19 @@ export function LibraryPage() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkTagId, setBulkTagId] = useState("");
+  const [bulkCollectionId, setBulkCollectionId] = useState("");
+  const [selectedCollectionId, setSelectedCollectionId] = useState("");
+  const [collectionCreatorOpen, setCollectionCreatorOpen] = useState(false);
+  const [newCollectionName, setNewCollectionName] = useState("");
+  const [newCollectionParentId, setNewCollectionParentId] = useState("");
   const [tagCreatorOpen, setTagCreatorOpen] = useState(false);
   const [newTagName, setNewTagName] = useState("");
   const [newTagColor, setNewTagColor] = useState("#73846f");
   const [importMessage, setImportMessage] = useState<{
+    kind: "success" | "error";
+    text: string;
+  } | null>(null);
+  const [rowActionMessage, setRowActionMessage] = useState<{
     kind: "success" | "error";
     text: string;
   } | null>(null);
@@ -201,6 +308,7 @@ export function LibraryPage() {
   const createDialog = useRef<HTMLDialogElement>(null);
   const queryClient = useQueryClient();
   const preferences = useQuery({ queryKey: ["preferences"], queryFn: api.preferences });
+  const collections = useQuery({ queryKey: ["collections"], queryFn: api.collections });
 
   const importPapers = useMutation({
     mutationFn: async (file: File) => {
@@ -270,8 +378,19 @@ export function LibraryPage() {
     if (recentOnly) params.set("recent", "true");
     if (/^\d{4}$/u.test(yearFrom)) params.set("yearFrom", yearFrom);
     if (/^\d{4}$/u.test(yearTo)) params.set("yearTo", yearTo);
+    if (selectedCollectionId) params.set("collection", selectedCollectionId);
     return params;
-  }, [deferredQuery, hasPdf, hasTranslation, recentOnly, sort, status, yearFrom, yearTo]);
+  }, [
+    deferredQuery,
+    hasPdf,
+    hasTranslation,
+    recentOnly,
+    selectedCollectionId,
+    sort,
+    status,
+    yearFrom,
+    yearTo,
+  ]);
 
   const searchKey = search.toString();
   useEffect(() => setSelected(new Set()), [searchKey]);
@@ -302,6 +421,16 @@ export function LibraryPage() {
     queryFn: api.tags,
     enabled: selected.size > 0 && status !== "deleted",
   });
+  const collectionOptions = useMemo(
+    () =>
+      (collections.data ?? [])
+        .map((collection) => ({
+          collection,
+          label: collectionPath(collection, collections.data ?? []),
+        }))
+        .sort((left, right) => left.label.localeCompare(right.label, "ja")),
+    [collections.data],
+  );
 
   useEffect(() => {
     if (tagCreatorOpen) newTagNameRef.current?.focus();
@@ -313,6 +442,20 @@ export function LibraryPage() {
       setNewTagName("");
       await queryClient.invalidateQueries({ queryKey: ["tags"] });
       newTagNameRef.current?.focus();
+    },
+  });
+
+  const createQuickCollection = useMutation({
+    mutationFn: () =>
+      api.createCollection({
+        name: newCollectionName.trim(),
+        parentId: newCollectionParentId || null,
+      }),
+    onSuccess: async () => {
+      setNewCollectionName("");
+      setNewCollectionParentId("");
+      setCollectionCreatorOpen(false);
+      await queryClient.invalidateQueries({ queryKey: ["collections"] });
     },
   });
 
@@ -369,6 +512,40 @@ export function LibraryPage() {
     onError: () => setBulkTagId(""),
   });
 
+  const bulkCollection = useMutation({
+    mutationFn: async (collectionId: string) => {
+      await Promise.all(
+        [...selected].map((paperId) => api.addPaperToCollection(paperId, collectionId)),
+      );
+    },
+    onSuccess: async () => {
+      setBulkCollectionId("");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["papers"] }),
+        queryClient.invalidateQueries({ queryKey: ["collections"] }),
+      ]);
+    },
+    onError: () => setBulkCollectionId(""),
+  });
+
+  const bulkRemoveCollection = useMutation({
+    mutationFn: async () => {
+      if (!selectedCollectionId) return;
+      await Promise.all(
+        [...selected].map((paperId) =>
+          api.removePaperFromCollection(paperId, selectedCollectionId),
+        ),
+      );
+    },
+    onSuccess: async () => {
+      setSelected(new Set());
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["papers"] }),
+        queryClient.invalidateQueries({ queryKey: ["collections"] }),
+      ]);
+    },
+  });
+
   const bulkDelete = useMutation({
     mutationFn: async () => {
       const byId = new Map(items.map((paper) => [paper.id, paper]));
@@ -406,6 +583,62 @@ export function LibraryPage() {
     onSuccess: (job) => {
       if (job.downloadUrl) window.location.assign(job.downloadUrl);
     },
+  });
+
+  const rowAction = useMutation({
+    mutationFn: async ({
+      paper,
+      action,
+      rating,
+    }: {
+      paper: PaperListItem;
+      action: PaperRowAction;
+      rating?: number | null;
+    }) => {
+      if (action === "copy-bibtex") {
+        await copyText(await api.bibtex(paper.id));
+        return action;
+      }
+      if (action === "toggle-archive") {
+        await api.updatePaper(paper.id, paper.version, {
+          status: paper.status === "archived" ? "inbox" : "archived",
+        });
+        return action;
+      }
+      if (action === "trash") {
+        await api.removePaper(paper.id, paper.version);
+        return action;
+      }
+      if (action === "restore") {
+        await api.restorePaper(paper.id, paper.version);
+        return action;
+      }
+      if (action === "rate") {
+        await api.updatePaper(paper.id, paper.version, { rating: rating ?? null });
+        return action;
+      }
+      return action;
+    },
+    onSuccess: async (action) => {
+      setRowActionMessage({
+        kind: "success",
+        text:
+          action === "copy-bibtex"
+            ? "BibTeXをクリップボードにコピーしました。"
+            : action === "rate"
+              ? "評価を更新しました。"
+              : "論文の状態を更新しました。",
+      });
+      if (action !== "copy-bibtex") {
+        setSelected(new Set());
+        await queryClient.invalidateQueries({ queryKey: ["papers"] });
+      }
+    },
+    onError: () =>
+      setRowActionMessage({
+        kind: "error",
+        text: "操作を完了できませんでした。再試行してください。",
+      }),
   });
 
   const allSelected = items.length > 0 && items.every((paper) => selected.has(paper.id));
@@ -476,6 +709,23 @@ export function LibraryPage() {
       else next.delete(id);
       return next;
     });
+  }
+
+  function runRowAction(paper: PaperListItem, action: PaperRowAction) {
+    setRowActionMessage(null);
+    if (action === "open") {
+      setOpenPaperId(paper.id);
+      return;
+    }
+    if (action === "trash" && !window.confirm(`「${paper.title}」をゴミ箱へ移動しますか？`)) {
+      return;
+    }
+    rowAction.mutate({ paper, action });
+  }
+
+  function ratePaper(paper: PaperListItem, rating: number | null) {
+    setRowActionMessage(null);
+    rowAction.mutate({ paper, action: "rate", rating });
   }
 
   function submitCreate(event: React.FormEvent<HTMLFormElement>) {
@@ -631,6 +881,119 @@ export function LibraryPage() {
         </p>
       )}
 
+      {rowActionMessage && (
+        <div
+          className={`import-status ${rowActionMessage.kind === "error" ? "error" : ""}`}
+          role={rowActionMessage.kind === "error" ? "alert" : "status"}
+        >
+          <span>{rowActionMessage.text}</span>
+          <button
+            type="button"
+            onClick={() => setRowActionMessage(null)}
+            aria-label="操作結果を閉じる"
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
+
+      <section className="collection-panel" aria-label="フォルダー">
+        <header>
+          <div>
+            <FolderOpen size={18} />
+            <strong>フォルダー</strong>
+          </div>
+          <button
+            type="button"
+            className="text-button"
+            aria-expanded={collectionCreatorOpen}
+            onClick={() => {
+              setCollectionCreatorOpen((open) => !open);
+              createQuickCollection.reset();
+            }}
+          >
+            <FolderPlus size={15} /> 新しいフォルダー
+          </button>
+        </header>
+
+        {collectionCreatorOpen && (
+          <form
+            className="quick-collection-creator"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (newCollectionName.trim()) createQuickCollection.mutate();
+            }}
+          >
+            <input
+              value={newCollectionName}
+              maxLength={200}
+              autoFocus
+              placeholder="フォルダー名"
+              aria-label="新しいフォルダー名"
+              onChange={(event) => {
+                setNewCollectionName(event.target.value);
+                createQuickCollection.reset();
+              }}
+            />
+            <select
+              value={newCollectionParentId}
+              onChange={(event) => setNewCollectionParentId(event.target.value)}
+              aria-label="親フォルダー"
+            >
+              <option value="">最上位に作成</option>
+              {collectionOptions.map(({ collection, label }) => (
+                <option key={collection.id} value={collection.id}>
+                  {label}
+                </option>
+              ))}
+            </select>
+            <button
+              className="button secondary compact"
+              disabled={!newCollectionName.trim() || createQuickCollection.isPending}
+            >
+              {createQuickCollection.isPending ? "作成中…" : "作成"}
+            </button>
+            {createQuickCollection.isError && (
+              <span className="quick-tag-feedback error" role="alert">
+                フォルダーを作成できませんでした。
+              </span>
+            )}
+          </form>
+        )}
+
+        <nav className="collection-filter-list" aria-label="フォルダーで絞り込む">
+          <button
+            type="button"
+            className={selectedCollectionId ? "" : "active"}
+            aria-pressed={!selectedCollectionId}
+            onClick={() => setSelectedCollectionId("")}
+          >
+            <FolderOpen size={15} /> すべての論文
+          </button>
+          {collectionOptions.map(({ collection, label }) => (
+            <button
+              type="button"
+              key={collection.id}
+              className={selectedCollectionId === collection.id ? "active" : ""}
+              aria-pressed={selectedCollectionId === collection.id}
+              title={collection.description ?? undefined}
+              onClick={() => setSelectedCollectionId(collection.id)}
+            >
+              {selectedCollectionId === collection.id ? (
+                <FolderOpen size={15} />
+              ) : (
+                <Folder size={15} />
+              )}
+              <span>{label}</span>
+              <small>{collection.paperCount ?? 0}</small>
+            </button>
+          ))}
+          {!collections.isPending && collectionOptions.length === 0 && (
+            <span className="collection-empty-hint">フォルダーはまだありません。</span>
+          )}
+        </nav>
+      </section>
+
       <section className="library-toolbar" aria-label="ライブラリの検索とフィルター">
         <label className="search-field">
           <Search size={19} />
@@ -677,7 +1040,7 @@ export function LibraryPage() {
               onChange={(event) => setStatus(event.target.value as StatusFilter)}
             >
               <option value="all">すべて</option>
-              <option value="inbox">未整理</option>
+              <option value="inbox">未着手</option>
               <option value="reading">読書中</option>
               <option value="read">読了</option>
               <option value="archived">保管済み</option>
@@ -802,9 +1165,43 @@ export function LibraryPage() {
               </select>
             </label>
           )}
-          {bulkTag.error && (
+          {status !== "deleted" && (
+            <label className="bulk-tag-control">
+              <FolderPlus size={16} aria-hidden="true" />
+              <span className="sr-only">選択した論文をフォルダーへ追加</span>
+              <select
+                value={bulkCollectionId}
+                aria-label="選択した論文をフォルダーへ追加"
+                disabled={collections.isPending || collections.isError || bulkCollection.isPending}
+                onChange={(event) => {
+                  const collectionId = event.target.value;
+                  setBulkCollectionId(collectionId);
+                  if (collectionId) bulkCollection.mutate(collectionId);
+                }}
+              >
+                <option value="">
+                  {collections.isPending ? "フォルダーを読込中…" : "フォルダーへ追加…"}
+                </option>
+                {collectionOptions.map(({ collection, label }) => (
+                  <option key={collection.id} value={collection.id}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {status !== "deleted" && selectedCollectionId && (
+            <button
+              type="button"
+              onClick={() => bulkRemoveCollection.mutate()}
+              disabled={bulkRemoveCollection.isPending}
+            >
+              <FolderMinus size={16} /> フォルダーから外す
+            </button>
+          )}
+          {(bulkTag.error || bulkCollection.error || bulkRemoveCollection.error) && (
             <span className="bulk-error" role="alert">
-              タグ追加に失敗しました
+              分類の変更に失敗しました
             </span>
           )}
           <div className="menu-wrap">
@@ -856,12 +1253,30 @@ export function LibraryPage() {
           </div>
         ) : items.length === 0 ? (
           <div className="empty-state">
-            <BookOpen size={31} />
-            <h2>最初の論文を追加しましょう</h2>
-            <p>DOI、arXiv ID、または手入力から始められます。</p>
-            <button className="button primary" onClick={openCreateDialog}>
-              <Plus size={17} /> 論文を追加
-            </button>
+            {selectedCollectionId ? <FolderOpen size={31} /> : <BookOpen size={31} />}
+            <h2>
+              {selectedCollectionId
+                ? "このフォルダーにはまだ論文がありません"
+                : "最初の論文を追加しましょう"}
+            </h2>
+            <p>
+              {selectedCollectionId
+                ? "「すべての論文」に戻り、論文を選択してフォルダーへ追加できます。"
+                : "DOI、arXiv ID、または手入力から始められます。"}
+            </p>
+            {selectedCollectionId ? (
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => setSelectedCollectionId("")}
+              >
+                すべての論文へ戻る
+              </button>
+            ) : (
+              <button className="button primary" onClick={openCreateDialog}>
+                <Plus size={17} /> 論文を追加
+              </button>
+            )}
           </div>
         ) : (
           <div className="table-scroll">
@@ -882,6 +1297,7 @@ export function LibraryPage() {
                   <th>年</th>
                   <th>掲載誌・会議</th>
                   <th>タグ</th>
+                  <th>フォルダー</th>
                   <th>PDF</th>
                   <th>評価</th>
                   <th>更新日</th>
@@ -898,6 +1314,9 @@ export function LibraryPage() {
                     checked={selected.has(paper.id)}
                     onCheck={(checked) => toggleOne(paper.id, checked)}
                     onOpen={setOpenPaperId}
+                    onAction={runRowAction}
+                    onRate={ratePaper}
+                    actionPending={rowAction.isPending}
                     open={openPaperId === paper.id}
                   />
                 ))}
@@ -1032,10 +1451,9 @@ export function LibraryPage() {
                       設定の既定値（
                       {statusLabel[preferences.data?.defaultStatus ?? "inbox"]}）
                     </option>
-                    <option value="inbox">未整理</option>
+                    <option value="inbox">未着手</option>
                     <option value="reading">読書中</option>
                     <option value="read">読了</option>
-                    <option value="archived">保管済み</option>
                   </select>
                 </label>
               </div>

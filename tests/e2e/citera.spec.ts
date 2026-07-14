@@ -62,6 +62,11 @@ test("owner can add, upload, read, annotate, search, and export a paper", async 
 
   await page.getByRole("link", { name: title }).click();
   await expect(page.locator(".detail-breadcrumb strong")).toHaveText(title);
+  await expect(page.locator(".paper-identity select option")).toHaveText([
+    "未着手",
+    "読書中",
+    "読了",
+  ]);
   await page.locator('.pdf-upload input[type="file"]').setInputFiles({
     name: "citera-e2e.pdf",
     mimeType: "application/pdf",
@@ -100,14 +105,16 @@ test("owner can add, upload, read, annotate, search, and export a paper", async 
   await expect(page.locator(".pdf-stage canvas")).toHaveCount(4);
 
   await page.getByRole("button", { name: "論文情報に戻る" }).click();
-  await page.getByRole("tab", { name: "コメント" }).click();
-  await page
+  await expect(page.getByRole("heading", { name: "Abstract", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "目次" })).toHaveCount(0);
+  const commentSection = page.locator("#paper-comment");
+  await commentSection
     .getByPlaceholder("この論文について気づいたこと、研究との関係など…")
     .fill("**重要:** 再現実験を行う。\n\n- dataset を確認");
-  await page.getByRole("button", { name: "保存" }).click();
-  await page.getByRole("tab", { name: "概要" }).click();
-  await page.getByLabel("一言要約").fill("再現実験の設計と評価方法を確認する論文");
-  await page.getByRole("button", { name: "保存" }).click();
+  await commentSection.getByRole("button", { name: "保存" }).click();
+  const summarySection = page.locator(".summary-section");
+  await summarySection.getByLabel("一言要約").fill("再現実験の設計と評価方法を確認する論文");
+  await summarySection.getByRole("button", { name: "保存" }).click();
 
   await page.getByRole("button", { name: "論文詳細を閉じる" }).last().click();
   await page.getByRole("link", { name: "ライブラリ" }).first().click();
@@ -118,6 +125,14 @@ test("owner can add, upload, read, annotate, search, and export a paper", async 
   );
 
   const row = page.getByRole("row").filter({ hasText: title });
+  const fourStarButton = row.getByRole("button", { name: `${title}を4つ星に評価` });
+  await fourStarButton.click();
+  await expect(fourStarButton.locator("svg")).toHaveAttribute("fill", "currentColor");
+
+  await row.getByRole("button", { name: `${title} のその他の操作` }).click();
+  await expect(page.getByRole("menuitem", { name: "詳細を開く" })).toBeVisible();
+  await page.keyboard.press("Escape");
+
   await row.getByRole("checkbox").check();
   const exportResponse = page.waitForResponse(
     (response) => response.url().includes("/v1/exports") && response.request().method() === "POST",

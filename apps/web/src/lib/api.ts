@@ -58,9 +58,9 @@ export interface PaperListItem {
   publicationDate: string | null;
   venue: string | null;
   status: "inbox" | "reading" | "read" | "archived";
-  readingStatus?: "unread" | "reading" | "read" | "on_hold";
   rating: number | null;
   tags: PaperTag[];
+  collections?: Array<{ id: string; name: string }>;
   hasPdf: boolean;
   hasNotes: boolean;
   metadataState: "pending" | "complete" | "needs_review" | "failed";
@@ -74,6 +74,14 @@ export interface PaperListItem {
 export interface PaperDetail extends PaperListItem {
   abstract: string | null;
   sourceUrl: string | null;
+  volume: string | null;
+  issue: string | null;
+  pages: string | null;
+  publisher: string | null;
+  language: string | null;
+  paperType: string;
+  priority: number;
+  readProgress: number;
   identifiers: PaperIdentifier[];
   collections: Array<{ id: string; name: string }>;
   notes: NoteRecord[];

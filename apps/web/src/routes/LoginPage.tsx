@@ -49,7 +49,7 @@ export function LoginPage() {
             <Check size={17} /> DOI・arXiv から自動取得
           </li>
           <li>
-            <Check size={17} /> オフラインでも閲覧・メモ
+            <Check size={17} /> キャッシュ済みの文献をオフライン閲覧
           </li>
         </ul>
         <p className="login-quote">

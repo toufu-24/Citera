@@ -50,39 +50,39 @@ erDiagram
 
 ## 主要 table
 
-| Table                               | 用途                                             | 重要制約/索引                                                                                                    |
-| ----------------------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| `users`                             | Citera owner/profile/deletion fence              | unique email, deletion-request timestamp and nonnegative monotonic recovery generation                           |
-| `user_preferences`                  | default collection/tags/status/export format     | one row per user, valid tag JSON and enum checks, collection `ON DELETE SET NULL`                                |
-| `oauth_accounts`                    | upstream identity mapping                        | unique(provider, provider_account_id), user FK                                                                   |
-| `oauth_states`                      | upstream OAuth state/PKCE/nonce transaction      | primary hashed state, expiry index                                                                               |
-| `session_families`                  | refresh lineage and family-wide revocation       | user+active index, durable revoked timestamp                                                                     |
-| `sessions`                          | Web/extension session/access hash + lineage      | unique token/access hashes, family/parent/replacement links, user/family active indexes                          |
-| `authorization_codes`               | extension one-time auth code/PKCE                | primary `code_hash`, expires/used                                                                                |
-| `papers`                            | selected bibliography and workflow               | user+created/updated/year/status indexes, rating check, soft delete, version                                     |
-| `libraries` / `library_members`     | personal library and future shared-library boundary | personal owner membership is created on first login; member status/role checks                                  |
-| `paper_identifiers`                 | DOI/arXiv/etc                                    | active rows only are unique(user, type, normalized); trashed paper identifiers keep `deleted_at` for restore       |
-| `authors`                           | user-scoped author identity                      | unique(user, normalized_name, coalesced ORCID), name index                                                       |
-| `paper_authors`                     | ordered authorship                               | PK(paper,author,role), unique paper+role+position, user+paper index                                              |
-| `metadata_values`                   | provenance/confidence candidates                 | user+paper+field index, confidence check                                                                         |
-| `files`                             | R2 metadata and verification state               | user+paper, same-paper SHA-256 duplicate check, file kind/language/label/default/order, soft delete              |
-| `tags` / `paper_tags`               | normalized labels                                | unique(user, normalized_name), PK(paper,tag), user+tag+paper index                                               |
-| `collections` / `collection_papers` | nested folders                                   | unique sibling name（soft-delete row も占有）、scoped joins                                                      |
-| `notes`                             | Markdown/page/highlight/todo                     | user+paper+updated, page check, version/soft delete                                                              |
-| `ingestions`                        | save workflow state                              | unique(user, client_mutation_id), state index                                                                    |
-| `changes`                           | monotonic sync log                               | autoincrement sequence, user+sequence, data_json/tombstone, partial unique(user, paper entity, version)          |
-| `client_mutations`                  | mutation retry result                            | PK(user, client_mutation_id), created-at index                                                                   |
-| `job_outbox`                        | D1 commit と Queue dispatch 間の durable handoff | unique idempotency_key, state+available index, serialized validated job                                          |
-| `export_jobs`                       | export state/R2 key                              | user+created index, format/state checks, expiry value                                                            |
-| `metadata_cache`                    | exact-provider candidate cache                   | primary provider key, expiry index; ETag column is reserved but not revalidated yet                              |
-| `job_runs`                          | Queue idempotency/terminal state                 | primary idempotency_key, user+state+updated index; user ID is intentionally not an FK for post-delete redelivery |
-| `paper_relations`                   | preprint/published/version relation              | PK(source, target, type), user+target index                                                                      |
-| `rate_limits`                       | D1 fixed-window counters                         | PK(scope, hashed key, window), window index                                                                      |
+| Table                               | 用途                                                | 重要制約/索引                                                                                                    |
+| ----------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `users`                             | Citera owner/profile/deletion fence                 | unique email, deletion-request timestamp and nonnegative monotonic recovery generation                           |
+| `user_preferences`                  | default collection/tags/status/export format        | one row per user, valid tag JSON and enum checks, collection `ON DELETE SET NULL`                                |
+| `oauth_accounts`                    | upstream identity mapping                           | unique(provider, provider_account_id), user FK                                                                   |
+| `oauth_states`                      | upstream OAuth state/PKCE/nonce transaction         | primary hashed state, expiry index                                                                               |
+| `session_families`                  | refresh lineage and family-wide revocation          | user+active index, durable revoked timestamp                                                                     |
+| `sessions`                          | Web/extension session/access hash + lineage         | unique token/access hashes, family/parent/replacement links, user/family active indexes                          |
+| `authorization_codes`               | extension one-time auth code/PKCE                   | primary `code_hash`, expires/used                                                                                |
+| `papers`                            | selected bibliography and workflow                  | user+created/updated/year/status indexes, rating check, soft delete, version                                     |
+| `libraries` / `library_members`     | personal library and future shared-library boundary | personal owner membership is created on first login; member status/role checks                                   |
+| `paper_identifiers`                 | DOI/arXiv/etc                                       | active rows only are unique(user, type, normalized); trashed paper identifiers keep `deleted_at` for restore     |
+| `authors`                           | user-scoped author identity                         | unique(user, normalized_name, coalesced ORCID), name index                                                       |
+| `paper_authors`                     | ordered authorship                                  | PK(paper,author,role), unique paper+role+position, user+paper index                                              |
+| `metadata_values`                   | provenance/confidence candidates                    | user+paper+field index, confidence check                                                                         |
+| `files`                             | R2 metadata and verification state                  | user+paper, same-paper SHA-256 duplicate check, file kind/language/label/default/order, soft delete              |
+| `tags` / `paper_tags`               | normalized labels                                   | unique(user, normalized_name), PK(paper,tag), user+tag+paper index                                               |
+| `collections` / `collection_papers` | nested folders                                      | unique sibling name（soft-delete row も占有）、scoped joins                                                      |
+| `notes`                             | Markdown/page/highlight/todo                        | user+paper+updated, page check, version/soft delete                                                              |
+| `ingestions`                        | save workflow state                                 | unique(user, client_mutation_id), state index                                                                    |
+| `changes`                           | monotonic sync log                                  | autoincrement sequence, user+sequence, data_json/tombstone, partial unique(user, paper entity, version)          |
+| `client_mutations`                  | mutation retry result                               | PK(user, client_mutation_id), created-at index                                                                   |
+| `job_outbox`                        | D1 commit と Queue dispatch 間の durable handoff    | unique idempotency_key, state+available index, serialized validated job                                          |
+| `export_jobs`                       | export state/R2 key                                 | user+created index, format/state checks, expiry value                                                            |
+| `metadata_cache`                    | exact-provider candidate cache                      | primary provider key, expiry index; ETag column is reserved but not revalidated yet                              |
+| `job_runs`                          | Queue idempotency/terminal state                    | primary idempotency_key, user+state+updated index; user ID is intentionally not an FK for post-delete redelivery |
+| `paper_relations`                   | preprint/published/version relation                 | PK(source, target, type), user+target index                                                                      |
+| `rate_limits`                       | D1 fixed-window counters                            | PK(scope, hashed key, window), window index                                                                      |
 
 ## 選択値
 
-- `papers.status`: `inbox | reading | read | archived`
-- `papers.reading_status`: `unread | reading | read | on_hold`
+- `papers.status`: `inbox | reading | read | archived`（画面上で使う唯一の論文状態）
+- `papers.reading_status`: `unread | reading | read | on_hold`（旧クライアント／既存DBとの互換用。`status` から同期し、画面では別状態として扱わない）
 - `papers.metadata_state`: `pending | complete | needs_review | failed`
 - `files.kind`: `original_pdf | supplement | thumbnail | extracted_text | export`
 - `files.file_kind`: `fulltext | translation | bilingual | supplement | other`

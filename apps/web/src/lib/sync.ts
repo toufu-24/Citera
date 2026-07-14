@@ -3,6 +3,8 @@ import { db } from "./database";
 
 let syncing: Promise<void> | null = null;
 
+export type SyncStatus = "syncing" | "synced" | "offline" | "error";
+
 async function applyChange(change: SyncChange): Promise<void> {
   const table =
     change.entityType === "paper"
@@ -69,15 +71,29 @@ export function syncNow(): Promise<void> {
   return syncing;
 }
 
-export function installSyncTriggers(): () => void {
-  const run = () => void syncNow().catch(() => undefined);
+export function installSyncTriggers(
+  onStatus: (status: SyncStatus) => void = () => undefined,
+): () => void {
+  const run = () => {
+    if (!navigator.onLine) {
+      onStatus("offline");
+      return;
+    }
+    onStatus("syncing");
+    void syncNow().then(
+      () => onStatus("synced"),
+      () => onStatus("error"),
+    );
+  };
   const focus = () => document.visibilityState === "visible" && run();
   window.addEventListener("online", run);
+  window.addEventListener("offline", run);
   document.addEventListener("visibilitychange", focus);
   const timer = window.setInterval(run, 60_000);
   run();
   return () => {
     window.removeEventListener("online", run);
+    window.removeEventListener("offline", run);
     document.removeEventListener("visibilitychange", focus);
     window.clearInterval(timer);
   };

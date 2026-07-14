@@ -103,6 +103,8 @@ export function PdfUpload({ paperId, onComplete }: PdfUploadProps) {
           <button
             type="button"
             className="button secondary compact"
+            aria-label="PDFを追加"
+            title="PDFを追加"
             onClick={() => input.current?.click()}
           >
             <FileUp size={16} /> PDFを追加

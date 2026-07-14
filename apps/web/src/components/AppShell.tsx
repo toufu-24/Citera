@@ -13,11 +13,13 @@ import { useEffect, useState } from "react";
 
 import { api, ApiRequestError } from "../lib/api";
 import { clearActiveDatabase } from "../lib/database";
-import { installSyncTriggers } from "../lib/sync";
+import { installSyncTriggers, type SyncStatus } from "../lib/sync";
 
 export function AppShell() {
   const [collapsed, setCollapsed] = useState(false);
-  const [online, setOnline] = useState(navigator.onLine);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>(
+    navigator.onLine ? "syncing" : "offline",
+  );
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const location = useLocation();
@@ -33,17 +35,7 @@ export function AppShell() {
     }
   }, [location.href, navigate, session.error]);
 
-  useEffect(() => {
-    const update = () => setOnline(navigator.onLine);
-    window.addEventListener("online", update);
-    window.addEventListener("offline", update);
-    return () => {
-      window.removeEventListener("online", update);
-      window.removeEventListener("offline", update);
-    };
-  }, []);
-
-  useEffect(() => installSyncTriggers(), []);
+  useEffect(() => installSyncTriggers(setSyncStatus), []);
 
   async function logout() {
     const accessSession = session.data?.session?.authenticationMethod === "access";
@@ -96,10 +88,18 @@ export function AppShell() {
         </nav>
 
         <div className="sidebar-spacer" />
-        <div className={online ? "sync-status" : "sync-status is-offline"}>
-          {online ? <Cloud size={16} /> : <WifiOff size={16} />}
-          <span>{online ? "同期中" : "オフライン"}</span>
-          {online && <span className="status-dot" />}
+        <div className={`sync-status is-${syncStatus}`}>
+          {syncStatus === "offline" ? <WifiOff size={16} /> : <Cloud size={16} />}
+          <span>
+            {syncStatus === "syncing"
+              ? "同期中"
+              : syncStatus === "synced"
+                ? "同期済み"
+                : syncStatus === "error"
+                  ? "同期に失敗"
+                  : "オフライン"}
+          </span>
+          {syncStatus === "synced" && <span className="status-dot" />}
         </div>
         <div className="account-card">
           <div className="avatar">
