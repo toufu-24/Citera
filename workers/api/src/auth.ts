@@ -55,9 +55,10 @@ interface LibraryRow extends Record<string, unknown> {
 function accessIssuer(env: AppBindings["Bindings"]): string | null {
   const configured = env.ACCESS_TEAM_DOMAIN?.trim();
   if (!configured) return null;
-  return (configured.startsWith("http://") || configured.startsWith("https://")
-    ? configured
-    : `https://${configured}`
+  return (
+    configured.startsWith("http://") || configured.startsWith("https://")
+      ? configured
+      : `https://${configured}`
   ).replace(/\/$/u, "");
 }
 
@@ -76,7 +77,11 @@ function claimText(payload: Record<string, unknown>, key: string): string | null
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-async function ensurePersonalLibrary(db: D1Database, userId: string, displayName: string): Promise<LibraryRow> {
+async function ensurePersonalLibrary(
+  db: D1Database,
+  userId: string,
+  displayName: string,
+): Promise<LibraryRow> {
   const existing = await first<LibraryRow>(
     db,
     `SELECT l.id,l.kind,l.name
@@ -90,14 +95,18 @@ async function ensurePersonalLibrary(db: D1Database, userId: string, displayName
   const libraryId = userId.startsWith("usr_") ? `lib_${userId.slice(4)}` : createId("lib");
   const now = nowUtcIso();
   await db.batch([
-    db.prepare(
-      `INSERT OR IGNORE INTO libraries (id,kind,name,created_at)
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO libraries (id,kind,name,created_at)
        VALUES (?,'personal',?,?)`,
-    ).bind(libraryId, `${displayName || "Personal"} library`, now),
-    db.prepare(
-      `INSERT OR IGNORE INTO library_members
+      )
+      .bind(libraryId, `${displayName || "Personal"} library`, now),
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO library_members
        (library_id,user_id,role,status,created_at) VALUES (? ,?,'owner','active',?)`,
-    ).bind(libraryId, userId, now),
+      )
+      .bind(libraryId, userId, now),
   ]);
   const library = await first<LibraryRow>(
     db,
@@ -107,7 +116,8 @@ async function ensurePersonalLibrary(db: D1Database, userId: string, displayName
      ORDER BY l.created_at LIMIT 1`,
     userId,
   );
-  if (!library) throw new ApiError(503, "LIBRARY_NOT_READY", "The personal library could not be created.");
+  if (!library)
+    throw new ApiError(503, "LIBRARY_NOT_READY", "The personal library could not be created.");
   return library;
 }
 
@@ -119,7 +129,8 @@ async function upsertAccessUser(
   const subject = claimText(payload, "sub");
   if (!subject) throw new ApiError(401, "ACCESS_SUBJECT_INVALID", "Access JWT subject is missing.");
   const email = claimText(payload, "email") ?? `${subject}@access.local`;
-  const displayName = claimText(payload, "name") ?? claimText(payload, "preferred_username") ?? email;
+  const displayName =
+    claimText(payload, "name") ?? claimText(payload, "preferred_username") ?? email;
   const avatarUrl = claimText(payload, "picture");
   const byIdentity = await first<AccessIdentityRow>(
     c.env.DB,
@@ -160,14 +171,22 @@ async function upsertAccessUser(
   };
 }
 
-async function authenticateAccess(c: Context<AppBindings>, next: () => Promise<void>): Promise<void> {
+async function authenticateAccess(
+  c: Context<AppBindings>,
+  next: () => Promise<void>,
+): Promise<void> {
   const issuer = accessIssuer(c.env);
   const audience = c.env.ACCESS_AUDIENCE?.trim();
   const token = c.req.header("Cf-Access-Jwt-Assertion");
   if (!issuer || !audience) {
-    throw new ApiError(503, "ACCESS_NOT_CONFIGURED", "Cloudflare Access verification is not configured.");
+    throw new ApiError(
+      503,
+      "ACCESS_NOT_CONFIGURED",
+      "Cloudflare Access verification is not configured.",
+    );
   }
-  if (!token) throw new ApiError(401, "UNAUTHENTICATED", "A valid Cloudflare Access identity is required.");
+  if (!token)
+    throw new ApiError(401, "UNAUTHENTICATED", "A valid Cloudflare Access identity is required.");
   let payload: Awaited<ReturnType<typeof verifyWithJwks>>;
   try {
     payload = await verifyWithJwks(
@@ -180,7 +199,11 @@ async function authenticateAccess(c: Context<AppBindings>, next: () => Promise<v
       { signal: AbortSignal.timeout(8_000) },
     );
   } catch {
-    throw new ApiError(401, "UNAUTHENTICATED", "The Cloudflare Access identity is invalid or expired.");
+    throw new ApiError(
+      401,
+      "UNAUTHENTICATED",
+      "The Cloudflare Access identity is invalid or expired.",
+    );
   }
   const identity = await upsertAccessUser(c, payload, issuer);
   c.set("user", identity.user);
@@ -307,7 +330,12 @@ function sessionToContext(
 }
 
 export const authenticate: MiddlewareHandler<AppBindings> = async (c, next) => {
-  if (c.env.ENVIRONMENT === "production" || c.req.header("Cf-Access-Jwt-Assertion")) {
+  // Browser requests protected by Cloudflare Access carry this assertion. The
+  // extension deliberately does not: after its interactive Access authorization
+  // redirect it uses Citera's own short-lived bearer token and rotating refresh
+  // token. Requiring an Access assertion for every production request would make
+  // the extension unusable as soon as the Worker was deployed.
+  if (c.req.header("Cf-Access-Jwt-Assertion")) {
     await authenticateAccess(c, next);
     return;
   }
@@ -732,7 +760,6 @@ interface AuthCodeRow extends Record<string, unknown> {
 }
 
 export async function exchangeExtensionToken(c: Context<AppBindings>): Promise<Response> {
-  assertLegacyAuthDisabled(c.env);
   const input = extensionTokenSchema.parse(await c.req.json());
   const hash = await sha256Hex(input.code);
   const saved = await first<AuthCodeRow>(
@@ -793,7 +820,6 @@ interface RefreshRow extends Record<string, unknown> {
 }
 
 export async function refreshSession(c: Context<AppBindings>): Promise<Response> {
-  assertLegacyAuthDisabled(c.env);
   const body = refreshSchema.parse(await c.req.json().catch(() => ({})));
   const cookieToken = getCookie(c, SESSION_COOKIE);
   if (!body.refreshToken && cookieToken) {
@@ -869,20 +895,60 @@ export async function refreshSession(c: Context<AppBindings>): Promise<Response>
 }
 
 export async function authSession(c: Context<AppBindings>): Promise<Response> {
-  const row = await first<{ expires_at: string } & Record<string, unknown>>(
-    c.env.DB,
-    "SELECT expires_at FROM sessions WHERE id=? AND user_id=?",
-    c.get("session").id,
-    c.get("user").id,
-  );
+  const accessAuthenticated = c.get("session").via === "access";
+  let sessionId = c.get("session").id;
+  let expiresAt: string | null = null;
+  if (accessAuthenticated) {
+    // Access protects this bootstrap endpoint. Persist a separate Citera cookie
+    // so the API paths can be Access-bypassed for the extension while still
+    // authenticating every browser request inside the Worker.
+    const existingToken = getCookie(c, SESSION_COOKIE);
+    const existing = existingToken
+      ? await first<{ id: string; expires_at: string } & Record<string, unknown>>(
+          c.env.DB,
+          `SELECT id,expires_at FROM sessions
+           WHERE user_id=? AND token_hash=? AND revoked_at IS NULL AND expires_at > ?`,
+          c.get("user").id,
+          await sessionHash(c.env, existingToken),
+          nowUtcIso(),
+        )
+      : null;
+    if (existing) {
+      sessionId = existing.id;
+      expiresAt = existing.expires_at;
+      await c.env.DB.prepare("UPDATE sessions SET last_used_at=? WHERE id=? AND user_id=?")
+        .bind(nowUtcIso(), existing.id, c.get("user").id)
+        .run();
+    } else {
+      const issued = await issueSession(c, {
+        userId: c.get("user").id,
+        deviceName: "Web browser (Cloudflare Access)",
+        extension: false,
+      });
+      sessionId = issued.sessionId;
+      expiresAt = issued.expiresAt;
+    }
+  } else {
+    const row = await first<{ expires_at: string } & Record<string, unknown>>(
+      c.env.DB,
+      "SELECT expires_at FROM sessions WHERE id=? AND user_id=?",
+      sessionId,
+      c.get("user").id,
+    );
+    expiresAt = row?.expires_at ?? null;
+  }
   return c.json({
     user: c.get("user"),
     library: {
       id: c.get("libraryId"),
       kind: "personal",
     },
-    session: { id: c.get("session").id, expiresAt: row?.expires_at ?? null },
-    expiresAt: row?.expires_at ?? null,
+    session: {
+      id: sessionId,
+      expiresAt,
+      authenticationMethod: accessAuthenticated ? "access" : c.get("session").via,
+    },
+    expiresAt,
   });
 }
 

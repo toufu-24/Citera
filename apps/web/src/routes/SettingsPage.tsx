@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArchiveRestore,
@@ -6,6 +6,7 @@ import {
   Cloud,
   Database,
   Download,
+  FolderTree,
   HardDrive,
   KeyRound,
   Laptop,
@@ -13,11 +14,12 @@ import {
   Save,
   Shield,
   Smartphone,
+  Tags,
   Trash2,
   UserRound,
 } from "lucide-react";
 
-import { api, type UserPreferences } from "../lib/api";
+import { api, type CollectionRecord, type PaperTag, type UserPreferences } from "../lib/api";
 import { clearActiveDatabase } from "../lib/database";
 
 const initialPreferences: UserPreferences = {
@@ -34,6 +36,294 @@ function bytes(value: number) {
     unit: value >= 1_000_000_000 ? "gigabyte" : "megabyte",
     maximumFractionDigits: 1,
   }).format(value >= 1_000_000_000 ? value / 1_000_000_000 : value / 1_000_000);
+}
+
+function TagEditor({ tag }: { tag: PaperTag }) {
+  const queryClient = useQueryClient();
+  const [name, setName] = useState(tag.name);
+  const [color, setColor] = useState(tag.color ?? "#73846f");
+  const update = useMutation({
+    mutationFn: () => api.updateTag(tag.id, { name: name.trim(), color }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["tags"] }),
+  });
+  const remove = useMutation({
+    mutationFn: () => api.removeTag(tag.id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["tags"] });
+      void queryClient.invalidateQueries({ queryKey: ["preferences"] });
+      void queryClient.invalidateQueries({ queryKey: ["papers"] });
+    },
+  });
+  return (
+    <div className="library-manager-row">
+      <input
+        type="color"
+        value={color}
+        onChange={(event) => setColor(event.target.value)}
+        aria-label={`${tag.name} の色`}
+      />
+      <input
+        value={name}
+        maxLength={100}
+        onChange={(event) => setName(event.target.value)}
+        aria-label={`${tag.name} の名前`}
+      />
+      <span>{tag.paperCount ?? 0}件</span>
+      <button
+        type="button"
+        className="text-button"
+        disabled={
+          !name.trim() ||
+          update.isPending ||
+          (name === tag.name && color === (tag.color ?? "#73846f"))
+        }
+        onClick={() => update.mutate()}
+      >
+        保存
+      </button>
+      <button
+        type="button"
+        className="text-button danger"
+        disabled={remove.isPending}
+        onClick={() => {
+          if (window.confirm(`タグ「${tag.name}」を削除しますか？論文自体は削除されません。`)) {
+            remove.mutate();
+          }
+        }}
+      >
+        削除
+      </button>
+      {(update.error || remove.error) && (
+        <span className="manager-error">保存できませんでした</span>
+      )}
+    </div>
+  );
+}
+
+function CollectionEditor({
+  collection,
+  collections,
+}: {
+  collection: CollectionRecord;
+  collections: CollectionRecord[];
+}) {
+  const queryClient = useQueryClient();
+  const [name, setName] = useState(collection.name);
+  const [description, setDescription] = useState(collection.description ?? "");
+  const [parentId, setParentId] = useState(collection.parentId ?? "");
+  const update = useMutation({
+    mutationFn: () =>
+      api.updateCollection(collection.id, {
+        name: name.trim(),
+        description: description.trim() || null,
+        parentId: parentId || null,
+      }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["collections"] }),
+  });
+  const remove = useMutation({
+    mutationFn: () => api.removeCollection(collection.id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["collections"] });
+      void queryClient.invalidateQueries({ queryKey: ["preferences"] });
+      void queryClient.invalidateQueries({ queryKey: ["papers"] });
+    },
+  });
+  return (
+    <div className="collection-manager-row">
+      <div>
+        <input
+          value={name}
+          maxLength={200}
+          onChange={(event) => setName(event.target.value)}
+          aria-label={`${collection.name} の名前`}
+        />
+        <input
+          value={description}
+          maxLength={10_000}
+          placeholder="説明（任意）"
+          onChange={(event) => setDescription(event.target.value)}
+          aria-label={`${collection.name} の説明`}
+        />
+        <select
+          value={parentId}
+          onChange={(event) => setParentId(event.target.value)}
+          aria-label={`${collection.name} の親コレクション`}
+        >
+          <option value="">親なし</option>
+          {collections
+            .filter((candidate) => candidate.id !== collection.id)
+            .map((candidate) => (
+              <option key={candidate.id} value={candidate.id}>
+                {candidate.name}
+              </option>
+            ))}
+        </select>
+      </div>
+      <span>{collection.paperCount ?? 0}件</span>
+      <button
+        type="button"
+        className="text-button"
+        disabled={!name.trim() || update.isPending}
+        onClick={() => update.mutate()}
+      >
+        保存
+      </button>
+      <button
+        type="button"
+        className="text-button danger"
+        disabled={remove.isPending}
+        onClick={() => {
+          if (
+            window.confirm(
+              `コレクション「${collection.name}」を削除しますか？論文自体は削除されません。`,
+            )
+          ) {
+            remove.mutate();
+          }
+        }}
+      >
+        削除
+      </button>
+      {(update.error || remove.error) && (
+        <span className="manager-error">保存できませんでした</span>
+      )}
+    </div>
+  );
+}
+
+function LibraryOrganization({
+  tags,
+  collections,
+}: {
+  tags: PaperTag[];
+  collections: CollectionRecord[];
+}) {
+  const queryClient = useQueryClient();
+  const [tagName, setTagName] = useState("");
+  const [tagColor, setTagColor] = useState("#73846f");
+  const [collectionName, setCollectionName] = useState("");
+  const [collectionDescription, setCollectionDescription] = useState("");
+  const [collectionParentId, setCollectionParentId] = useState("");
+  const createTag = useMutation({
+    mutationFn: () => api.createTag({ name: tagName.trim(), color: tagColor }),
+    onSuccess: () => {
+      setTagName("");
+      void queryClient.invalidateQueries({ queryKey: ["tags"] });
+    },
+  });
+  const createCollection = useMutation({
+    mutationFn: () =>
+      api.createCollection({
+        name: collectionName.trim(),
+        description: collectionDescription.trim() || null,
+        parentId: collectionParentId || null,
+      }),
+    onSuccess: () => {
+      setCollectionName("");
+      setCollectionDescription("");
+      setCollectionParentId("");
+      void queryClient.invalidateQueries({ queryKey: ["collections"] });
+    },
+  });
+  const submitTag = (event: FormEvent) => {
+    event.preventDefault();
+    if (tagName.trim()) createTag.mutate();
+  };
+  const submitCollection = (event: FormEvent) => {
+    event.preventDefault();
+    if (collectionName.trim()) createCollection.mutate();
+  };
+
+  return (
+    <div className="library-managers">
+      <section>
+        <h3>
+          <Tags size={16} /> タグ
+        </h3>
+        <form className="manager-create-form tag-create-form" onSubmit={submitTag}>
+          <input
+            type="color"
+            value={tagColor}
+            onChange={(event) => setTagColor(event.target.value)}
+            aria-label="新しいタグの色"
+          />
+          <input
+            value={tagName}
+            maxLength={100}
+            placeholder="新しいタグ"
+            aria-label="新しいタグ名"
+            onChange={(event) => setTagName(event.target.value)}
+          />
+          <button
+            className="button secondary compact"
+            disabled={!tagName.trim() || createTag.isPending}
+          >
+            追加
+          </button>
+        </form>
+        <div className="manager-list">
+          {tags.map((tag) => (
+            <TagEditor key={tag.id} tag={tag} />
+          ))}
+          {!tags.length && <p className="settings-hint">タグはまだありません。</p>}
+        </div>
+        {createTag.error && <p className="form-error">タグを作成できませんでした。</p>}
+      </section>
+
+      <section>
+        <h3>
+          <FolderTree size={16} /> コレクション
+        </h3>
+        <form className="manager-create-form collection-create-form" onSubmit={submitCollection}>
+          <input
+            value={collectionName}
+            maxLength={200}
+            placeholder="新しいコレクション"
+            aria-label="新しいコレクション名"
+            onChange={(event) => setCollectionName(event.target.value)}
+          />
+          <input
+            value={collectionDescription}
+            maxLength={10_000}
+            placeholder="説明（任意）"
+            aria-label="新しいコレクションの説明"
+            onChange={(event) => setCollectionDescription(event.target.value)}
+          />
+          <select
+            value={collectionParentId}
+            onChange={(event) => setCollectionParentId(event.target.value)}
+            aria-label="親コレクション"
+          >
+            <option value="">親なし</option>
+            {collections.map((collection) => (
+              <option key={collection.id} value={collection.id}>
+                {collection.name}
+              </option>
+            ))}
+          </select>
+          <button
+            className="button secondary compact"
+            disabled={!collectionName.trim() || createCollection.isPending}
+          >
+            追加
+          </button>
+        </form>
+        <div className="manager-list">
+          {collections.map((collection) => (
+            <CollectionEditor
+              key={collection.id}
+              collection={collection}
+              collections={collections}
+            />
+          ))}
+          {!collections.length && <p className="settings-hint">コレクションはまだありません。</p>}
+        </div>
+        {createCollection.error && (
+          <p className="form-error">コレクションを作成できませんでした。</p>
+        )}
+      </section>
+    </div>
+  );
 }
 
 export function SettingsPage() {
@@ -108,6 +398,9 @@ export function SettingsPage() {
           </a>
           <a href="#defaults">
             <ArchiveRestore size={17} /> 保存の既定値
+          </a>
+          <a href="#organization">
+            <Tags size={17} /> タグと分類
           </a>
           <a href="#export">
             <Download size={17} /> エクスポート
@@ -304,6 +597,27 @@ export function SettingsPage() {
               <p className="form-error" role="alert">
                 既定値を保存できませんでした。
               </p>
+            )}
+          </section>
+
+          <section className="settings-card" id="organization">
+            <header>
+              <div className="settings-icon">
+                <Tags size={19} />
+              </div>
+              <div>
+                <h2>タグとコレクション</h2>
+                <p>分類を作成・変更し、コレクションの階層を管理します。</p>
+              </div>
+            </header>
+            {tags.isPending || collections.isPending ? (
+              <div className="loading-row">読み込み中…</div>
+            ) : tags.isError || collections.isError ? (
+              <p className="form-error" role="alert">
+                タグとコレクションを読み込めませんでした。
+              </p>
+            ) : (
+              <LibraryOrganization tags={tags.data ?? []} collections={collections.data ?? []} />
             )}
           </section>
 

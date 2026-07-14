@@ -8,7 +8,7 @@ Citera は Cloudflare 上で個人運用する論文管理システムです。W
 
 ## 実装されている範囲
 
-- React/Vite PWA: Google ログイン、ライブラリ、検索・状態/年/PDFフィルター、ソート、一括タグ/状態変更/削除/復元/既定形式 export、論文詳細、タグ/コレクション編集、PDF.js 表示、ページメモ、保存既定値、端末失効、使用量、バックアップ、確認付き account delete
+- React/Vite PWA: Cloudflare Access ログイン、ライブラリ、検索・状態/年/PDFフィルター、ソート、BibTeX/RIS/CSV/JSON import、一括タグ/状態変更/削除/復元/既定形式 export、論文詳細、タグ/階層コレクション管理、PDF.js 表示、ページメモ、保存既定値、端末失効、使用量、バックアップ、確認付き account delete
 - Hono Worker API: ユーザースコープ付き CRUD、論理削除/復元、楽観的排他、統一エラー、差分同期
 - D1/Drizzle: 書誌、識別子、著者、タグ、コレクション、メモ、ファイル、セッション、変更ログ、ジョブ
 - R2: method/key/type/checksum/実 Content-Length を拘束する本番の短寿命 S3 署名 URL と、完全ローカル開発用の認証済み Worker プロキシ
@@ -49,7 +49,7 @@ docs/                  architecture, API, security, deployment, ADRs
 
 - [mise](https://mise.jdx.dev/)
 - Cloudflare アカウント（本番デプロイ時）
-- Google OAuth client（本番ログイン時）
+- Cloudflare Zero Trust の Access application とログイン用 IdP（本番ログイン時）
 - Chrome/Chromium（拡張機能の確認時）
 
 Node.js と pnpm は `.mise.toml` が固定します。グローバルの Node/pnpm に依存しません。
@@ -106,7 +106,7 @@ mise exec -- pnpm test:e2e
 mise exec -- pnpm build
 ```
 
-自動テストは production secrets を使いません。Google OAuth と production R2 presign は、callback/credential を設定した staging で別途 smoke test が必要です。特にブラウザは JavaScript から `Content-Length` を設定できず request body から自動導出するため、実ブラウザから remote R2 への signed PUT を確認してください。
+自動テストは production secrets を使いません。Cloudflare Access の実 JWT と production R2 presign は、Access application と credential を設定した staging で別途 smoke test が必要です。特にブラウザは JavaScript から `Content-Length` を設定できず request body から自動導出するため、実ブラウザから remote R2 への signed PUT を確認してください。
 
 ## Cloudflare リソース
 
@@ -134,21 +134,13 @@ mise exec -- pnpm wrangler r2 bucket cors list citera-files
 
 `r2-cors.json` の placeholder はデプロイ先 Web origin と `chrome-extension://<extension-id>` に置き換えます。API 側の `ALLOWED_ORIGINS` にも同じ Web/extension origins を設定します。callback 用の `https://<extension-id>.chromiumapp.org` は `ALLOWED_EXTENSION_IDS` から許可されます。R2 バケット自体は公開しません。
 
-## OAuth
+## 認証
 
-現在実装されている upstream provider は Google だけです。Google OAuth client に次の callback URL を登録し、同じ値を `GOOGLE_REDIRECT_URI` に設定します。本番では HTTPS の `APP_ORIGIN` と同じ origin、path は正確に `/v1/auth/callback/google`、query/fragment なしでなければ起動時検査と deploy preflight が拒否します。
+本番 Web の静的画面は Cloudflare Access の self-hosted application で保護します。API は別 application の path-specific Bypass を通した上で Citera cookie/bearer を Worker が検証し、`/v1/auth/session` と `/v1/auth/extension/authorize` は Web application 内のより具体的な hostname/path entry として保護します（具体的な2 application構成は `docs/deployment.md`）。Access policy で許可ユーザーを絞り、Web application の `ACCESS_TEAM_DOMAIN`（`https://<team>.cloudflareaccess.com`）と 64 文字 AUD tag を `ACCESS_AUDIENCE` に設定してください。Worker も `Cf-Access-Jwt-Assertion` を JWKS/RS256、issuer、audience、有効期限まで検証します。
 
-```text
-https://YOUR_DOMAIN/v1/auth/callback/google
-```
+Web は Access 認証済み session endpoint で Citera の HttpOnly cookie を受け取り、以後の bypass API でも Worker 内認証を継続します。拡張機能は対話的な認可画面だけ Access を通り、その後は Citera の Authorization Code + PKCE (S256) から得た短寿命 access token と毎回ローテーションする refresh token を使います。
 
-開発用 callback URL:
-
-```text
-http://localhost:8787/v1/auth/callback/google
-```
-
-個人運用では `OWNER_EMAIL` を設定し、OAuth provider が返した verified email と一致する利用者だけを受け入れてください。拡張機能は Citera を OAuth authorization server として使い、Authorization Code + PKCE (S256) で短寿命 access token とローテーション refresh token を得ます。
+ローカル開発では dev login を使用できます。旧 Google OAuth route はローカル互換用に残りますが、本番では無効です。
 
 ## 必要な環境変数・secret
 
@@ -156,8 +148,8 @@ http://localhost:8787/v1/auth/callback/google
 
 - `APP_ORIGIN`: Web の正規 origin
 - `ALLOWED_ORIGINS`: Web origin と `chrome-extension://<id>` の comma-separated allowlist
-- `OWNER_EMAIL`: 許可する所有者メールアドレス
-- `GOOGLE_REDIRECT_URI`: 本番では `APP_ORIGIN` と同じ origin の正確な `/v1/auth/callback/google`
+- `ACCESS_TEAM_DOMAIN`: Cloudflare Access team domain
+- `ACCESS_AUDIENCE`: self-hosted application の 64 文字 AUD tag
 - `R2_ACCOUNT_ID`, `R2_BUCKET_NAME`: 32 桁 hex Cloudflare account ID と R2 S3 署名先 bucket
 - `ALLOWED_EXTENSION_IDS`: 許可する拡張機能 ID
 - `MAX_PDF_BYTES`, `MAX_USER_STORAGE_BYTES`, `MAX_EXPORT_BYTES`, `PRESIGN_TTL_SECONDS`: 1 PDF/owner storage/同期 metadata export 上限と短寿命 URL 設定（署名 URL は最大 900 秒）
@@ -166,14 +158,11 @@ secret（Wrangler secret に登録）:
 
 - `TOKEN_HASH_PEPPER`: Web session / extension access・refresh token hash 用
 - `IP_HASH_SALT`: rate-limit/IP fingerprint hash 用（token pepper と別値）
-- `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
 - `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`: `citera-files` の Object Read & Write に限定
 
 ```bash
 mise exec -- pnpm wrangler secret put TOKEN_HASH_PEPPER --env production --config wrangler.jsonc
 mise exec -- pnpm wrangler secret put IP_HASH_SALT --env production --config wrangler.jsonc
-mise exec -- pnpm wrangler secret put GOOGLE_CLIENT_ID --env production --config wrangler.jsonc
-mise exec -- pnpm wrangler secret put GOOGLE_CLIENT_SECRET --env production --config wrangler.jsonc
 mise exec -- pnpm wrangler secret put R2_ACCESS_KEY_ID --env production --config wrangler.jsonc
 mise exec -- pnpm wrangler secret put R2_SECRET_ACCESS_KEY --env production --config wrangler.jsonc
 ```
@@ -207,7 +196,7 @@ mise run deploy
 
 Web の静的成果物は API Worker の assets binding から配信され、`/v1/*` だけ Worker code が処理します。Jobs Worker は Queue の唯一の consumer です。
 
-API/Jobs の Production 設定は `workers_dev=false` で `*.workers.dev` 公開を無効化するため、先に Cloudflare 側で API Worker の custom domain route を用意してください。`wrangler.jsonc`、`workers/jobs/wrangler.jsonc`、`r2-cors.json` の placeholder を実際の D1 ID・HTTPS origin/正確な Google callback・owner email・extension ID・32 桁 hex R2 account ID に置き換え、`mise exec -- pnpm deploy:check` を通してから migration/deploy します。Repository の template は誤デプロイを防ぐため、この preflight に意図的に失敗します。`mise run deploy` も同じ検査を先頭で実行します。
+API/Jobs の Production 設定は `workers_dev=false` で `*.workers.dev` 公開を無効化するため、先に Cloudflare 側で API Worker の custom domain route と Access application/policy を用意してください。`wrangler.jsonc` の Access team domain/AUD placeholder を実値へ置き換え、`mise exec -- pnpm deploy:check` を通してから migration/deploy します。`mise run deploy` も同じ検査を先頭で実行します。
 
 ## バックアップ
 
@@ -237,10 +226,9 @@ API/Jobs の Production 設定は `workers_dev=false` で `*.workers.dev` 公開
 - FTS5 の環境差を避け、初期版は索引付き正規化列 + LIKE 検索です。移行条件は ADR に記録しています。
 - PWA の cached shell/一覧は offline で開けますが、UI mutation を Dexie Outbox に積む配線は未実装です。offline での追加・メモ編集は保証しません。
 - Web の一覧 UI が露出する filter/sort は検索・状態・年・PDF と主要 sort に限られます。API が持つ tag/collection/author/venue/rating/note/date/type filters と全 sort はまだ画面へ接続していません。
-- 既存 tag/collection の論文への付け外しはできますが、tag/collection 自体の作成・rename・階層管理 UI はありません。全書誌フィールドの編集、metadata provenance 候補の選択、曖昧重複の解決アクションも未実装です。
-- import input は現時点では UI placeholder です。
+- 全書誌フィールドの編集、metadata provenance 候補の選択、曖昧重複の解決アクションは未実装です。
 - Backup ZIP は streaming ではなく、`MAX_BACKUP_BYTES` の範囲で memory 上に生成します。大規模 library の backup/restore には未対応です。
-- Google 以外の upstream OAuth provider は未実装です。Google ID token は JWKS/RS256 と issuer/audience/time/nonce を検証し、refresh token は family lineage を保って毎回 rotate します。古い token の再利用を検出すると family 全体を失効します。静的 asset 用 header は `apps/web/public/_headers` にありますが、custom domain の実 response で適用を確認してください。
+- 本番 Web 認証は Cloudflare Access の IdP 設定に委譲します。Worker は Access JWT を再検証し、拡張機能 refresh token は family lineage を保って毎回 rotate します。古い token の再利用を検出すると family 全体を失効します。静的 asset 用 header は `apps/web/public/_headers` にありますが、custom domain の実 response で適用を確認してください。
 
 ## 設計資料
 

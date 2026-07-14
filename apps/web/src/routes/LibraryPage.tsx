@@ -24,6 +24,7 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
 import { ApiRequestError, api, type PaperListItem } from "../lib/api";
 import { db } from "../lib/database";
+import { parseCitationFile, resolveImportedTagIds } from "../lib/import";
 import { PaperDetailView } from "./PaperDetailPage";
 
 type StatusFilter = "all" | PaperListItem["status"] | "deleted";
@@ -182,6 +183,13 @@ export function LibraryPage() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkTagId, setBulkTagId] = useState("");
+  const [tagCreatorOpen, setTagCreatorOpen] = useState(false);
+  const [newTagName, setNewTagName] = useState("");
+  const [newTagColor, setNewTagColor] = useState("#73846f");
+  const [importMessage, setImportMessage] = useState<{
+    kind: "success" | "error";
+    text: string;
+  } | null>(null);
   const [openPaperId, setOpenPaperId] = useState<string | null>(null);
   const [manualEntry, setManualEntry] = useState(false);
   const [drawerWidth, setDrawerWidth] = useState(() =>
@@ -189,9 +197,68 @@ export function LibraryPage() {
   );
   const [drawerResizing, setDrawerResizing] = useState(false);
   const drawerResizeStartRef = useRef<{ x: number; width: number } | null>(null);
+  const newTagNameRef = useRef<HTMLInputElement>(null);
   const createDialog = useRef<HTMLDialogElement>(null);
   const queryClient = useQueryClient();
   const preferences = useQuery({ queryKey: ["preferences"], queryFn: api.preferences });
+
+  const importPapers = useMutation({
+    mutationFn: async (file: File) => {
+      const imported = await parseCitationFile(file);
+      const tagsByName = new Map(
+        (await api.tags()).map((tag) => [tag.name.trim().toLocaleLowerCase(), tag]),
+      );
+      let created = 0;
+      let duplicates = 0;
+      let failed = 0;
+      const ignoredTagNames = new Set<string>();
+      for (const paper of imported) {
+        const resolvedTags = resolveImportedTagIds(paper.tags, tagsByName);
+        resolvedTags.ignoredTagNames.forEach((name) => ignoredTagNames.add(name));
+        const { tags: _tags, ...body } = paper;
+        void _tags;
+        try {
+          await api.createPaper({
+            ...body,
+            tagIds: resolvedTags.tagIds,
+            clientMutationId: crypto.randomUUID(),
+          });
+          created += 1;
+        } catch (error) {
+          if (error instanceof ApiRequestError && error.code === "DUPLICATE_IDENTIFIER") {
+            duplicates += 1;
+          } else {
+            failed += 1;
+          }
+        }
+      }
+      if (created === 0 && failed > 0) {
+        throw new Error(`${failed}件を登録できませんでした。ファイル内容を確認してください。`);
+      }
+      return {
+        total: imported.length,
+        created,
+        duplicates,
+        failed,
+        ignoredTags: ignoredTagNames.size,
+      };
+    },
+    onSuccess: ({ created, duplicates, failed, ignoredTags }) => {
+      setImportMessage({
+        kind: failed ? "error" : "success",
+        text: `${created}件を登録しました${duplicates ? `（重複${duplicates}件をスキップ）` : ""}${
+          failed ? `。${failed}件は登録できませんでした` : ""
+        }${ignoredTags ? `。未登録のタグ${ignoredTags}個は追加せず無視しました` : ""}。`,
+      });
+      void queryClient.invalidateQueries({ queryKey: ["papers"] });
+    },
+    onError: (error) => {
+      setImportMessage({
+        kind: "error",
+        text: error instanceof Error ? error.message : "インポートに失敗しました。",
+      });
+    },
+  });
 
   const search = useMemo(() => {
     const params = new URLSearchParams({ limit: "50", sort });
@@ -234,6 +301,19 @@ export function LibraryPage() {
     queryKey: ["tags"],
     queryFn: api.tags,
     enabled: selected.size > 0 && status !== "deleted",
+  });
+
+  useEffect(() => {
+    if (tagCreatorOpen) newTagNameRef.current?.focus();
+  }, [tagCreatorOpen]);
+
+  const createQuickTag = useMutation({
+    mutationFn: () => api.createTag({ name: newTagName.trim(), color: newTagColor }),
+    onSuccess: async () => {
+      setNewTagName("");
+      await queryClient.invalidateQueries({ queryKey: ["tags"] });
+      newTagNameRef.current?.focus();
+    },
   });
 
   const createPaper = useMutation({
@@ -406,18 +486,14 @@ export function LibraryPage() {
     const normalizedIdentifier = identifier
       .replace(/^doi:\s*/iu, "")
       .replace(/^https?:\/\/(?:dx\.)?doi\.org\//iu, "");
-    const identifierType = /^10\.\d{4,9}\//u.test(
-      normalizedIdentifier,
-    )
-      ? "doi"
-      : "arxiv";
+    const identifierType = /^10\.\d{4,9}\//u.test(normalizedIdentifier) ? "doi" : "arxiv";
     const selectedStatus = formString(form, "status");
     const title = formString(form, "title").trim();
     const authors = formString(form, "authors")
-        .split(",")
-        .map((value) => value.trim())
-        .filter(Boolean)
-        .map((displayName) => ({ displayName }));
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .map((displayName) => ({ displayName }));
     const venue = formString(form, "venue").trim();
     const sourceUrl = formString(form, "sourceUrl").trim();
     const body: Record<string, unknown> = {
@@ -445,15 +521,115 @@ export function LibraryPage() {
           </p>
         </div>
         <div className="heading-actions">
-          <label className="button secondary file-import-button">
-            <Upload size={17} /> インポート
-            <input type="file" accept=".bib,.ris,.json,.csv" hidden />
+          <button
+            type="button"
+            className="button secondary"
+            aria-expanded={tagCreatorOpen}
+            aria-controls="quick-tag-creator"
+            onClick={() => {
+              setTagCreatorOpen((open) => !open);
+              createQuickTag.reset();
+            }}
+          >
+            <Tag size={17} /> タグを追加
+          </button>
+          <label
+            className={`button secondary file-import-button${importPapers.isPending ? " disabled" : ""}`}
+          >
+            <Upload size={17} /> {importPapers.isPending ? "インポート中…" : "インポート"}
+            <input
+              type="file"
+              accept=".bib,.bibtex,.ris,.json,.csv"
+              disabled={importPapers.isPending}
+              hidden
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0];
+                event.currentTarget.value = "";
+                if (file) {
+                  setImportMessage(null);
+                  importPapers.mutate(file);
+                }
+              }}
+            />
           </label>
           <button className="button primary" onClick={openCreateDialog}>
             <Plus size={18} /> 論文を追加
           </button>
         </div>
       </header>
+
+      {tagCreatorOpen && (
+        <form
+          id="quick-tag-creator"
+          className="quick-tag-creator"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (newTagName.trim()) createQuickTag.mutate();
+          }}
+        >
+          <label className="quick-tag-color">
+            <span>色</span>
+            <input
+              type="color"
+              value={newTagColor}
+              onChange={(event) => setNewTagColor(event.target.value)}
+              aria-label="新しいタグの色"
+            />
+          </label>
+          <label className="quick-tag-name">
+            <span>タグ名</span>
+            <input
+              ref={newTagNameRef}
+              value={newTagName}
+              maxLength={100}
+              placeholder="例: あとで読む"
+              aria-label="新しいタグ名"
+              onChange={(event) => {
+                setNewTagName(event.target.value);
+                createQuickTag.reset();
+              }}
+            />
+          </label>
+          <button
+            className="button primary compact"
+            disabled={!newTagName.trim() || createQuickTag.isPending}
+          >
+            <Plus size={15} /> {createQuickTag.isPending ? "追加中…" : "追加"}
+          </button>
+          {createQuickTag.isSuccess && (
+            <span className="quick-tag-feedback success" role="status">
+              追加しました
+            </span>
+          )}
+          {createQuickTag.isError && (
+            <span className="quick-tag-feedback error" role="alert">
+              追加できませんでした。同名タグがないか確認してください。
+            </span>
+          )}
+          <button
+            type="button"
+            className="quick-tag-close"
+            onClick={() => setTagCreatorOpen(false)}
+            aria-label="タグ追加を閉じる"
+          >
+            <X size={16} />
+          </button>
+        </form>
+      )}
+
+      {importMessage && (
+        <p
+          className={
+            importMessage.kind === "success" ? "import-status success" : "import-status error"
+          }
+          role={importMessage.kind === "error" ? "alert" : "status"}
+        >
+          {importMessage.text}
+          <button type="button" onClick={() => setImportMessage(null)} aria-label="通知を閉じる">
+            <X size={14} />
+          </button>
+        </p>
+      )}
 
       <section className="library-toolbar" aria-label="ライブラリの検索とフィルター">
         <label className="search-field">
@@ -779,11 +955,7 @@ export function LibraryPage() {
                 }
               }}
             />
-            <PaperDetailView
-              paperId={openPaperId}
-              drawer
-              onClose={() => setOpenPaperId(null)}
-            />
+            <PaperDetailView paperId={openPaperId} drawer onClose={() => setOpenPaperId(null)} />
           </aside>
         </>
       )}
@@ -831,11 +1003,7 @@ export function LibraryPage() {
                   <strong>書誌情報を手入力</strong>
                   <span>DOIがなくても登録できます。</span>
                 </div>
-                <button
-                  type="button"
-                  className="text-button"
-                  onClick={() => setManualEntry(false)}
-                >
+                <button type="button" className="text-button" onClick={() => setManualEntry(false)}>
                   DOI入力に戻る
                 </button>
               </header>
@@ -888,8 +1056,8 @@ export function LibraryPage() {
                   ? createPaper.error.message
                   : "保存できませんでした。入力内容と接続を確認してください。"}
               </p>
-              {duplicateDetails && (
-                duplicateDetails.deletedAt && duplicateDetails.version !== null ? (
+              {duplicateDetails &&
+                (duplicateDetails.deletedAt && duplicateDetails.version !== null ? (
                   <button
                     type="button"
                     className="text-button"
@@ -906,8 +1074,7 @@ export function LibraryPage() {
                   >
                     登録済みの論文を開く
                   </Link>
-                )
-              )}
+                ))}
             </div>
           )}
           <footer>

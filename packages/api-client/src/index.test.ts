@@ -17,6 +17,7 @@ function paperMutation() {
   return {
     id: paperId,
     title: "Citera contract fixture",
+    summary: null,
     abstract: null,
     authors: [],
     publicationYear: null,

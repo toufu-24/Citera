@@ -7,7 +7,7 @@
 
 - Single owner だが schema/API は user scoped にし、将来 account が増えても isolation する。
 - First browser target は Chrome/Chromium。Firefox は browser API wrapper までを初期境界とする。
-- Upstream OAuth は Google のみ。Real provider E2E は deployment secret が必要な manual check。
+- Production Web identity は Cloudflare Access に委譲し、実 Access JWT/login/logout は staging の manual check とする。
 - Highlight anchor data model は作るが、初期 UI の必須完成点は page-number note。PDF overlay rendering は deferred。
 - OpenAlex は provider type/interface、thumbnail/extracted-text は file/job type の拡張点だけを持つ。実 adapter、PDF text pipeline、large streaming ZIP は無料枠での計測後に実装する。
 

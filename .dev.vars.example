@@ -1,5 +1,7 @@
 APP_ORIGIN=http://localhost:5173
 ALLOWED_ORIGINS=http://localhost:5173,http://localhost:4173,chrome-extension://replace-with-extension-id
+ACCESS_TEAM_DOMAIN=
+ACCESS_AUDIENCE=
 TOKEN_HASH_PEPPER=replace-with-a-different-random-secret
 IP_HASH_SALT=replace-with-an-independent-random-secret
 OWNER_EMAIL=you@example.com

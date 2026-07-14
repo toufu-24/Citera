@@ -2,14 +2,15 @@
 
 ## Threat model
 
-Citera’s threat model covers unauthenticated Internet users, another OAuth identity, malicious page content, leaked signed URLs, replayed sync/Queue messages, and unsafe external metadata. It does not claim to protect data from a compromised owner device, compromised extension, or Cloudflare account.
+Citera’s threat model covers unauthenticated Internet users, another Access identity, malicious page content, leaked signed URLs, replayed sync/Queue messages, and unsafe external metadata. It does not claim to protect data from a compromised user device, compromised extension, or Cloudflare account.
 
 ## Authentication
 
-- Upstream Google authorization code flow uses Arctic; state and PKCE verifier are checked. Hono `verifyWithJwks` verifies the ID token against Google's JWKS with RS256, Google issuer, configured client-ID audience, expiry and issued-at constraints. Its nonce is compared to the hashed transaction nonce, and its subject must equal the authenticated Google `userinfo` subject. JWKS and `userinfo` requests each have an 8-second timeout. GitHub and other upstream providers are not implemented.
-- Web receives a random high-entropy session token only in an `HttpOnly; SameSite=Lax` cookie (`Secure` in production). D1 stores `SHA-256(TOKEN_HASH_PEPPER || ":" || token)`, expiry, device metadata and revoked time—not bearer plaintext.
-- Extension uses authorization code + PKCE S256. Its one-time code has a short expiry and consumed flag. Access token is short lived; refresh token rotates on every successful refresh and only peppered hashes are stored. Sessions retain family/parent/replacement lineage. Reuse of a revoked predecessor durably revokes the family and every active child; conditional child issuance prevents a concurrent refresh from escaping that revocation.
-- `OWNER_EMAIL` rejects a verified Google email that does not match. Production request handling fails closed with `503` when this variable is empty/placeholder or the other required security configuration is invalid.
+- Production static Web routes and the two identity-bootstrap endpoints are enforced by Cloudflare Access. The Worker independently validates the bootstrap endpoints' injected `Cf-Access-Jwt-Assertion` with the team JWKS, RS256, exact issuer, application audience and time claims before using `issuer + subject` as the identity.
+- API paths have a path-specific Access Bypass so extension bearer calls can reach the Worker. The protected Web session bootstrap exchanges the Access identity for a random high-entropy Citera token in an `HttpOnly; Secure; SameSite=Lax` cookie. Every bypassed API route then applies Citera cookie/bearer authentication and resource authorization. D1 stores only `SHA-256(TOKEN_HASH_PEPPER || ":" || token)` and session metadata.
+- Extension interactive authorization runs behind Access and then uses Citera authorization code + PKCE S256. Its one-time code has a short expiry and consumed flag. Access token is short lived; refresh token rotates on every successful refresh and only peppered hashes are stored. Sessions retain family/parent/replacement lineage. Reuse of a revoked predecessor durably revokes the family and every active child; conditional child issuance prevents a concurrent refresh from escaping that revocation.
+- Legacy Google OAuth code remains available only outside production for local compatibility. Production legacy login, callback, and dev-login routes fail closed.
+- Production request handling fails closed with `503` when Access, R2, origin, or hashing configuration is incomplete.
 - Cookie/session/refresh responses use `Cache-Control: no-store`.
 
 ## Authorization and tenant isolation
@@ -31,10 +32,10 @@ Citera’s threat model covers unauthenticated Internet users, another OAuth ide
 
 ## CSRF and CORS
 
-- Cookie-authenticated mutations require an `Origin` present in `ALLOWED_ORIGINS`; there is no separate double-submit token/header in the current implementation.
-- SameSite=Lax and exact Origin checking form the current CSRF defense. Production cookies also use `Secure`.
+- Local cookie-authenticated mutations require an `Origin` present in `ALLOWED_ORIGINS`; there is no separate double-submit token/header in the current implementation.
+- Production Web bootstrap requests are authenticated at the edge and through the signed Access assertion; later API requests use the Citera cookie. Exact Origin checking remains enabled for cookie mutations and cross-origin requests.
 - Extension requests use bearer tokens and do not rely on cookies. `chrome-extension://<id>` must be present in API `ALLOWED_ORIGINS`; `ALLOWED_EXTENSION_IDS` separately allows the `chromiumapp.org` OAuth callback.
-- Preflight allows only required methods/headers; OAuth redirect endpoints are GET but consume one-time state.
+- Preflight allows only required methods/headers; the extension authorization redirect is GET but issues a one-time code.
 
 ## Input and content safety
 
@@ -50,15 +51,15 @@ Citera’s threat model covers unauthenticated Internet users, another OAuth ide
 - Server does not fetch arbitrary page/PDF URL supplied by a user.
 - Metadata jobs build URLs only for fixed Crossref and arXiv HTTPS hosts from normalized identifiers. OpenAlex is a type/interface placeholder only.
 - There is no general server-side URL fetch path, so user-supplied page/PDF URLs are not passed to Worker `fetch`. The fixed provider requests currently use the platform's default redirect handling; per-hop host revalidation is not implemented.
-- Metadata-provider fetch has an 8-second abort timeout, explicit status handling, user-agent/contact setting and cache TTL. Google `userinfo` also has an 8-second abort timeout. Response byte/content-type limits are not yet enforced for these external responses.
+- Metadata-provider fetch has an 8-second abort timeout, explicit status handling, user-agent/contact setting and cache TTL. Response byte/content-type limits are not yet enforced for these external responses.
 - The extension accepts only credential-free HTTP(S) page/PDF URLs and rejects localhost plus directly addressed private, loopback, link-local, reserved and non-global IP space. It automatically retrieves only an exact same-origin PDF. Cross-origin retrieval requires a separate confirmation showing the target and always uses `credentials: "omit"`; same-origin retrieval may use the current publisher session.
 - Extension redirects are manual, limited to five, and every visible next/final URL is revalidated. An opaque redirect is rejected, the full download has a 20-second timeout and 100 MiB streaming cap, and PDF magic bytes are checked before upload. Browser `fetch` cannot independently pin DNS resolution, so a publicly named host using DNS rebinding remains a residual client-side risk.
 
 ## Token and secret handling
 
-- `TOKEN_HASH_PEPPER`, `IP_HASH_SALT`, Google client secret and R2 S3 credentials are Wrangler secrets. Production request handling fails closed unless the token pepper and independent IP salt are each at least 32 characters; Google client ID/secret and R2 access credentials exist; `R2_ACCOUNT_ID` is exactly 32 hexadecimal characters; owner email is non-placeholder; `APP_ORIGIN` is a bare HTTPS origin; `GOOGLE_REDIRECT_URI` is that same origin plus exactly `/v1/auth/callback/google` without query/fragment; the origin allowlist contains only HTTPS/extension origins; and dev bypass is disabled. `SESSION_SECRET` is not used by the current implementation.
+- `TOKEN_HASH_PEPPER`, `IP_HASH_SALT` and R2 S3 credentials are Wrangler secrets. Production request handling fails closed unless the token pepper and independent IP salt are each at least 32 characters; R2 access credentials exist; `R2_ACCOUNT_ID` is exactly 32 hexadecimal characters; Access team domain/AUD are configured; `APP_ORIGIN` is a bare HTTPS origin; the origin allowlist contains only HTTPS/extension origins; and dev bypass is disabled.
 - Rotating `TOKEN_HASH_PEPPER` invalidates existing sessions/access/refresh credentials; there is no previous-key overlap window.
-- Google access/ID tokens are used during the callback and are not persisted. Requested scopes are `openid email profile`.
+- Access application tokens are validated in memory and are not persisted by Citera.
 - Application code does not intentionally log Authorization/Cookie values or signed URLs. There is no general-purpose structured redaction logger, so log review remains a release requirement.
 - Wrangler authentication should use OS keychain where supported.
 
@@ -102,7 +103,7 @@ Paper/collection/note/file rows use soft-delete/tombstone state, but only paper 
 
 - [ ] Two-user integration isolation passes for every resource family.
 - [ ] D1 dump contains no raw web/refresh/access bearer token.
-- [ ] OAuth state/nonce/PKCE failure cases reject.
+- [ ] Access issuer/audience/signature/time failures and extension state/nonce/PKCE failures reject.
 - [ ] CSRF and disallowed Origin mutations reject.
 - [ ] Oversize/non-PDF/mismatched hash upload fails and is not downloadable.
 - [ ] Presigned key/header/body length cannot be changed; browser-derived signed `Content-Length` works against remote R2 and TTL is at most 15 minutes.

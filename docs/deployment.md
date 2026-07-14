@@ -70,32 +70,35 @@ mise exec -- pnpm wrangler r2 bucket cors list citera-files
 
 Keep the bucket private. Presigned URLs work only at the R2 S3 endpoint, not custom domains. They are reusable bearer URLs until expiry, so Citera limits TTL to at most 900 seconds and uses exact generated keys. PUT signatures bind `Content-Type`, checksum, `If-None-Match` and the declared actual `Content-Length`. Browser JavaScript cannot set `Content-Length`; Citera deliberately omits it from the returned client header map and the user agent derives the same value from the Blob/ArrayBuffer body. The committed CORS file includes `GET`, `HEAD`, `PUT`, the upload/Range headers and response headers needed by the Web app and extension; replace every placeholder before applying it.
 
-## 5. OAuth setup
+## 5. Cloudflare Access setup
 
-Create a Google OAuth client with the exact production callback:
+Create these self-hosted Access applications. More-specific application paths take precedence over their parent path:
 
-```text
-https://citera.example.com/v1/auth/callback/google
-```
+| Application | Public hostname / paths                                                                                                                    | Policy                            | Purpose                                                                                                                                      |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Citera Web  | Add three public-hostname entries to the same app: `citera.fujinoso.com` (no path), `/v1/auth/session`, and `/v1/auth/extension/authorize` | explicit Allow for intended users | Protect static Web/PWA routes and inject the same-audience user JWT on the two exact bootstrap paths                                         |
+| Citera API  | `/v1/*` and `/api/v1/*`                                                                                                                    | Bypass / Include Everyone         | Let Citera cookie/bearer requests reach the Worker; the two exact Web-app path entries above remain protected because they are more specific |
+
+Bypass disables Access security and logging for those API paths; this is deliberate only because every routed API endpoint then applies Citera authentication and resource authorization in the Worker. Do not add unauthenticated application endpoints under those prefixes without a security review. Keep `/health` public only if external monitoring requires it; `/v1/health` remains authenticated.
+
+Copy the team domain (`https://<team>.cloudflareaccess.com`) to `ACCESS_TEAM_DOMAIN` and the Citera Web application's 64-character Application Audience (AUD) tag to `ACCESS_AUDIENCE`. The Worker validates `Cf-Access-Jwt-Assertion` with the team JWKS, RS256, exact issuer and audience. A Web call to the protected session endpoint receives a separate HttpOnly Citera cookie used on the bypassed API paths. Extension token/API calls use Citera bearer credentials and therefore do not depend on Access cookies.
 
 Set secrets:
 
 ```bash
 mise exec -- pnpm wrangler secret put TOKEN_HASH_PEPPER --env production --config wrangler.jsonc
 mise exec -- pnpm wrangler secret put IP_HASH_SALT --env production --config wrangler.jsonc
-mise exec -- pnpm wrangler secret put GOOGLE_CLIENT_ID --env production --config wrangler.jsonc
-mise exec -- pnpm wrangler secret put GOOGLE_CLIENT_SECRET --env production --config wrangler.jsonc
 ```
 
-Set `OWNER_EMAIL`, bare HTTPS `APP_ORIGIN=https://citera.example.com` and `GOOGLE_REDIRECT_URI=https://citera.example.com/v1/auth/callback/google` as production vars. The redirect must use the exact same origin and callback path with no query or fragment. Set `ALLOWED_ORIGINS` to the Web origin plus `chrome-extension://<id>`, and `ALLOWED_EXTENSION_IDS` to the same stable ID. Production request handling fails closed when this callback/origin/owner configuration is invalid, `R2_ACCOUNT_ID` is not 32 hex characters, Google/R2 credentials are absent, either hash secret is shorter than 32 characters, or dev bypass is enabled. Use independent random values for the token pepper and IP salt. `SESSION_SECRET` and GitHub credentials are not used by the current implementation.
+Set bare HTTPS `APP_ORIGIN`, `ALLOWED_ORIGINS` to the Web origin plus `chrome-extension://<id>`, and `ALLOWED_EXTENSION_IDS` to the same stable ID. Production request handling fails closed when Access/origin configuration is invalid, `R2_ACCOUNT_ID` is not 32 hex characters, R2 credentials are absent, either hash secret is shorter than 32 characters, or dev bypass is enabled. Use independent random values for the token pepper and IP salt.
 
 Review all non-secret runtime values before deploy:
 
-| Target              | Values                                                                                                                                                                                                                                                                                                      |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| API Worker          | `ENVIRONMENT`, `APP_ORIGIN`, `ALLOWED_ORIGINS`, `OWNER_EMAIL`, `GOOGLE_REDIRECT_URI`, `ALLOWED_EXTENSION_IDS`, optional `EXTENSION_REDIRECT_ORIGINS`, `R2_ACCOUNT_ID`, `R2_BUCKET_NAME`, `MAX_PDF_BYTES`, `MAX_USER_STORAGE_BYTES`, `MAX_EXPORT_BYTES`, `PRESIGN_TTL_SECONDS`; keep `AUTH_DEV_BYPASS=false` |
-| Jobs Worker         | `ENVIRONMENT`, `MAX_JOB_ATTEMPTS`, `MAX_BACKUP_BYTES`, `PENDING_UPLOAD_TTL_SECONDS`, `METADATA_CACHE_SECONDS`, optional `CROSSREF_MAILTO`                                                                                                                                                                   |
-| Web/extension build | `VITE_API_BASE_URL=https://citera.example.com`; `VITE_ENABLE_DEV_LOGIN` must not be enabled for production Web                                                                                                                                                                                              |
+| Target              | Values                                                                                                                                                                                                                                                                                                         |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| API Worker          | `ENVIRONMENT`, `APP_ORIGIN`, `ALLOWED_ORIGINS`, `ACCESS_TEAM_DOMAIN`, `ACCESS_AUDIENCE`, `ALLOWED_EXTENSION_IDS`, optional `EXTENSION_REDIRECT_ORIGINS`, `R2_ACCOUNT_ID`, `R2_BUCKET_NAME`, `MAX_PDF_BYTES`, `MAX_USER_STORAGE_BYTES`, `MAX_EXPORT_BYTES`, `PRESIGN_TTL_SECONDS`; keep `AUTH_DEV_BYPASS=false` |
+| Jobs Worker         | `ENVIRONMENT`, `MAX_JOB_ATTEMPTS`, `MAX_BACKUP_BYTES`, `PENDING_UPLOAD_TTL_SECONDS`, `METADATA_CACHE_SECONDS`, optional `CROSSREF_MAILTO`                                                                                                                                                                      |
+| Web/extension build | `VITE_API_BASE_URL=https://citera.fujinoso.com`; `VITE_ENABLE_DEV_LOGIN` must not be enabled for production Web                                                                                                                                                                                                |
 
 ## 6. Extension identity
 
@@ -103,7 +106,7 @@ Pack or publish the extension once so its ID is stable. Add that ID to `ALLOWED_
 
 ## 7. Validate before deploy
 
-After replacing every production D1/domain/callback/owner/extension/R2-account/CORS placeholder, run the production preflight. The committed templates intentionally fail this check until they contain real deployment values.
+After replacing the production Access team-domain/AUD placeholders, run the production preflight. The committed template intentionally fails this check until those external values are known.
 
 ```bash
 mise exec -- pnpm lint
@@ -115,7 +118,7 @@ mise exec -- pnpm build
 mise exec -- pnpm deploy:check
 ```
 
-`deploy:check` rejects the zero D1 ID or mismatched API/Jobs IDs; API or Jobs production `workers_dev` other than `false`; a non-HTTPS/placeholder/non-origin `APP_ORIGIN`; a `GOOGLE_REDIRECT_URI` other than that exact origin plus `/v1/auth/callback/google`; a non-hex/non-32-character `R2_ACCOUNT_ID`; placeholder owner/extension values; enabled dev bypass; and unresolved/non-production origins in `r2-cors.json`. It validates committed non-secret configuration only; runtime validation additionally requires Google/R2 secrets, and neither check can prove that the custom-domain route or Cloudflare resources already exist.
+`deploy:check` rejects zero/mismatched D1 IDs; mismatched R2/Queue bindings; production `workers_dev` other than `false`; a non-HTTPS `APP_ORIGIN`; an invalid Access team domain or non-64-character AUD tag; a non-hex/non-32-character `R2_ACCOUNT_ID`; invalid extension IDs; enabled dev bypass; and API/R2 CORS origin differences. It validates committed non-secret configuration only; runtime validation additionally requires token/IP hash and R2 secrets, and neither check can prove that the custom-domain route, Access policy, or Cloudflare resources already exist.
 
 Production R2 presign flow cannot be proven against local Miniflare. Use a disposable remote bucket/environment and an actual Web/extension browser request for one controlled smoke test: exact-size signed PUT with browser-derived `Content-Length`, different-size/key/header rejection, completion checksum/magic check, Range GET, expired URL rejection, and cleanup.
 
@@ -131,10 +134,10 @@ The root deploy task first runs the same `deploy:check`, builds the workspace, d
 
 ## 9. Custom domain and staging
 
-- Before step 8, bind `citera.example.com` to API Worker; static assets and `/v1/*` share the origin to keep cookies SameSite and simplify CORS.
+- Before step 8, bind `citera.fujinoso.com` to API Worker; static assets and `/v1/*` share the origin to keep cookies SameSite and simplify CORS.
 - Use separate `citera-staging` D1/R2/Queue resources; never share production R2 write credentials.
-- Register staging Google OAuth callback separately.
-- Restrict preview/staging with Cloudflare Access if desired, but keep application authorization in API.
+- Use a separate staging Access application/AUD and restrictive staging policy.
+- Keep Worker-side JWT validation and application authorization even though Access protects the hostname.
 
 ## 10. Local multi-worker caveat
 
@@ -146,14 +149,14 @@ Cloudflare documents multi-config local producer/consumer as experimental, and Q
 - D1 Free daily limits are hard limits; an exhausted read/write allowance causes queries to fail until reset. Indexes and bounded page size are essential.
 - Queue Free retention and DLQ guarantees may be short; D1 `job_outbox` is the producer handoff and `job_runs` is the durable consumer operational record.
 - Keep future heavy PDF extraction in clients; the current extraction job is only a delegated placeholder. Queue jobs must fit measured CPU/memory budgets and checkpoint state.
-- Rotating `TOKEN_HASH_PEPPER` immediately invalidates existing sessions; no old-key overlap is implemented. Rotate Google/R2 credentials with the provider's overlap procedure, then revoke the old credential.
+- Rotating `TOKEN_HASH_PEPPER` immediately invalidates extension sessions; no old-key overlap is implemented. Rotate R2 credentials with the provider's overlap procedure, then revoke the old credential.
 - Backup creation can be smoke-tested, but restore/import is not implemented. Keep an independent D1/R2 backup procedure until restore support exists.
 - Test account deletion only in disposable staging: confirm immediate user tombstone/session revocation and auth/non-deletion-job fencing; no physical deletion before the 20-minute grace covering the maximum 15-minute signed URL and normal lease; retry while an owned job is running; paginated final removal of the complete owner R2 prefix and D1 cascade; and hourly generation recovery after a terminal/stale deletion attempt.
 
 ## 12. Production gaps to close
 
 - Verify that the committed `apps/web/public/_headers` policy appears on custom-domain static responses; API middleware headers do not cover assets served directly by the assets binding.
-- Run a two-user tenant-isolation suite and a real Google callback smoke test.
+- Run a two-user tenant-isolation suite and a real Access JWT/login/logout smoke test.
 - Verify extension API CORS and R2 CORS separately; configuring only one is insufficient.
 - Backup ZIP generation is in-memory and bounded by `MAX_BACKUP_BYTES`; it is not suitable for a large library.
 - Verify the Jobs Worker hourly Cron after deploy; it recovers terminal/stale account-deletion generations, dispatches pending `job_outbox` rows and cleans stale uploads, expired exports, OAuth/code/cache rows, old outbox/client-mutation records and rate-limit rows.

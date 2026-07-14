@@ -1,16 +1,16 @@
-# ADR 0003: Social OAuth と extension PKCE を分離し、token hash を所有する
+# ADR 0003: Cloudflare Access と extension PKCE を分離し、token hash を所有する
 
 - Status: Accepted
 - Date: 2026-07-13
 
 ## Context
 
-Citera は Google の OAuth client であると同時に、browser extension の OAuth authorization server です。一般的な auth framework の session schema は bearer session token を D1 に保存することがあり、「平文 token を保存しない」要件と衝突します。
+Citera の本番 Web は Cloudflare Access で保護し、browser extension に対しては Citera が OAuth authorization server として動作します。拡張機能の非ブラウザ API 呼び出しは Access cookie に依存できず、bearer session token を平文で D1 に保存する設計も避ける必要があります。
 
 ## Decision
 
-Upstream Google authorization code flow の protocol helper は Arctic を使い、Citera が D1 の hashed state、PKCE verifier、nonce を検証します。ID token は Hono `verifyWithJwks` で Google JWKS/RS256、issuer、client-ID audience、time claims を検証し、nonce と `userinfo` subject も一致させます。Session/token persistence は小さな adapter が所有し、D1 には `TOKEN_HASH_PEPPER` を使った SHA-256 hash だけを保存します。Extension は one-time code + PKCE S256、short access、rotating refresh credential を使います。個人 deployment は `OWNER_EMAIL` を必須運用設定とします。
+本番 Web の静的 route と identity-bootstrap endpoint は Access で保護します。Bootstrap の `Cf-Access-Jwt-Assertion` を team JWKS/RS256、issuer、application audience、time claims まで Worker でも検証し、Web には別の Citera HttpOnly cookie を発行します。API path は extension bearer を通すため Access Bypass とし、全 route を Citera cookie/bearer と resource scope で認証・認可します。Extension の対話的 authorization endpoint は Access identity を使って one-time code を発行し、PKCE S256、short access、rotating refresh credential へ交換します。D1 には `TOKEN_HASH_PEPPER` を使った token の SHA-256 hash だけを保存します。旧 Google flow はローカル互換用として本番では無効にします。
 
 ## Consequences
 
-Auth framework の turnkey schema より code/test が増えます。Google/JWKS の実 smoke test は secret/callback 登録が必要な manual deployment check です。Rotation は `session_families` と parent/replacement lineage を増やし、旧 token replay 時に family-wide revoke するため D1 write が増えます。D1 dump に bearer plaintext がないことと、concurrent rotation/replay が active child を残さないことを security release gate にします。
+Access application/policy/AUD の外部設定と、実 Access JWT の staging smoke test が必要です。Rotation は `session_families` と parent/replacement lineage を増やし、旧 token replay 時に family-wide revoke するため D1 write が増えます。D1 dump に bearer plaintext がないことと、concurrent rotation/replay が active child を残さないことを security release gate にします。

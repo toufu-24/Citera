@@ -84,6 +84,19 @@ const jobsProduction = jobs.env?.production;
 const d1Id = production?.d1_databases?.[0]?.database_id;
 const jobsD1Id = jobsProduction?.d1_databases?.[0]?.database_id;
 const vars = production?.vars ?? {};
+const apiBucket = production?.r2_buckets?.find(
+  (binding) => binding.binding === "FILES",
+)?.bucket_name;
+const jobsBucket = jobsProduction?.r2_buckets?.find(
+  (binding) => binding.binding === "FILES",
+)?.bucket_name;
+const apiQueue = production?.queues?.producers?.find(
+  (binding) => binding.binding === "JOBS",
+)?.queue;
+const jobsProducerQueue = jobsProduction?.queues?.producers?.find(
+  (binding) => binding.binding === "JOBS",
+)?.queue;
+const jobsConsumerQueue = jobsProduction?.queues?.consumers?.[0]?.queue;
 const allowedOrigins = String(vars.ALLOWED_ORIGINS ?? "")
   .split(",")
   .map((value) => value.trim())
@@ -96,6 +109,12 @@ if (!d1Id || d1Id === "00000000-0000-0000-0000-000000000000") {
   fail("replace the production D1 database_id in wrangler.jsonc");
 }
 if (jobsD1Id !== d1Id) fail("API and Jobs production D1 database_id values must match");
+if (!apiBucket || apiBucket !== jobsBucket || apiBucket !== vars.R2_BUCKET_NAME) {
+  fail("API, Jobs, and R2_BUCKET_NAME must reference the same production R2 bucket");
+}
+if (!apiQueue || apiQueue !== jobsProducerQueue || apiQueue !== jobsConsumerQueue) {
+  fail("API producer, Jobs producer, and Jobs consumer must reference the same production Queue");
+}
 if (!String(vars.APP_ORIGIN ?? "").startsWith("https://")) {
   fail("APP_ORIGIN must be an HTTPS origin");
 }
@@ -116,17 +135,27 @@ if (
   fail("APP_ORIGIN must be an HTTPS origin without a path, query, or fragment");
 }
 const accessTeamDomain = String(vars.ACCESS_TEAM_DOMAIN ?? "").trim();
+let accessIssuer;
+try {
+  accessIssuer = new URL(
+    accessTeamDomain.startsWith("https://") ? accessTeamDomain : `https://${accessTeamDomain}`,
+  );
+} catch {
+  accessIssuer = null;
+}
 if (
-  !accessTeamDomain ||
+  !accessIssuer ||
   accessTeamDomain.includes("replace-with") ||
-  accessTeamDomain.includes("example.com") ||
-  accessTeamDomain.startsWith("http://") ||
-  !accessTeamDomain.includes(".")
+  accessIssuer.protocol !== "https:" ||
+  !accessIssuer.hostname.endsWith(".cloudflareaccess.com") ||
+  accessIssuer.pathname !== "/" ||
+  accessIssuer.search ||
+  accessIssuer.hash
 ) {
   fail("replace ACCESS_TEAM_DOMAIN with the Cloudflare Access team domain");
 }
-if (!vars.ACCESS_AUDIENCE || String(vars.ACCESS_AUDIENCE).includes("replace-with")) {
-  fail("replace ACCESS_AUDIENCE with the Cloudflare Access application audience");
+if (!/^[0-9a-f]{64}$/iu.test(String(vars.ACCESS_AUDIENCE ?? ""))) {
+  fail("replace ACCESS_AUDIENCE with the 64-character Access application AUD tag");
 }
 if (!/^[0-9a-f]{32}$/iu.test(String(vars.R2_ACCOUNT_ID ?? ""))) {
   fail("replace R2_ACCOUNT_ID with the 32-character Cloudflare account ID");
@@ -145,6 +174,21 @@ if (
 ) {
   fail("ALLOWED_ORIGINS must contain only final HTTPS Web and chrome-extension origins");
 }
+if (appOrigin && !allowedOrigins.includes(appOrigin.origin)) {
+  fail("ALLOWED_ORIGINS must include APP_ORIGIN");
+}
+const extensionIds = String(vars.ALLOWED_EXTENSION_IDS ?? "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+const extensionOrigins = extensionIds.map((id) => `chrome-extension://${id}`);
+if (
+  !extensionIds.length ||
+  extensionIds.some((id) => !/^[a-p]{32}$/u.test(id)) ||
+  extensionOrigins.some((origin) => !allowedOrigins.includes(origin))
+) {
+  fail("every ALLOWED_EXTENSION_IDS entry must be a valid ID present in ALLOWED_ORIGINS");
+}
 if (vars.AUTH_DEV_BYPASS !== "false") fail("AUTH_DEV_BYPASS must be false");
 
 const corsOrigins = Array.isArray(cors)
@@ -161,6 +205,12 @@ if (
   )
 ) {
   fail("replace every r2-cors.json origin with final production Web/extension origins");
+}
+if (
+  corsOrigins.length !== allowedOrigins.length ||
+  corsOrigins.some((origin) => !allowedOrigins.includes(origin))
+) {
+  fail("R2 CORS origins must exactly match the API ALLOWED_ORIGINS set");
 }
 
 if (process.exitCode) process.exit(process.exitCode);

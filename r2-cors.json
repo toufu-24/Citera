@@ -1,8 +1,8 @@
 [
   {
     "AllowedOrigins": [
-      "https://citera.example.com",
-      "chrome-extension://replace-with-extension-id"
+      "https://citera.fujinoso.com",
+      "chrome-extension://bcmpmggbgiaemocjepddaeoehflhmhld"
     ],
     "AllowedMethods": ["GET", "HEAD", "PUT"],
     "AllowedHeaders": [

@@ -75,6 +75,8 @@ function assertProductionConfiguration(env: AppBindings["Bindings"]): void {
   const accessTeamDomain = env.ACCESS_TEAM_DOMAIN?.trim() ?? "";
   const invalid =
     env.AUTH_DEV_BYPASS === "true" ||
+    !env.TOKEN_HASH_PEPPER ||
+    env.TOKEN_HASH_PEPPER.length < 32 ||
     !env.IP_HASH_SALT ||
     env.IP_HASH_SALT.length < 32 ||
     !env.R2_ACCESS_KEY_ID ||

@@ -46,6 +46,7 @@ export function AppShell() {
   useEffect(() => installSyncTriggers(), []);
 
   async function logout() {
+    const accessSession = session.data?.session?.authenticationMethod === "access";
     try {
       await api.logout();
     } catch (error) {
@@ -56,7 +57,11 @@ export function AppShell() {
     } finally {
       queryClient.clear();
       await clearActiveDatabase();
-      void navigate({ to: "/login", search: { returnTo: undefined } });
+      if (accessSession) {
+        window.location.assign("/cdn-cgi/access/logout");
+      } else {
+        void navigate({ to: "/login", search: { returnTo: undefined } });
+      }
     }
   }
 

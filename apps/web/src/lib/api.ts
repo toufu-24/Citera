@@ -7,7 +7,7 @@ export interface SessionUser {
 
 export interface SessionResponse {
   user: SessionUser;
-  session?: { id: string };
+  session?: { id: string; authenticationMethod?: "access" | "cookie" | "bearer" };
   expiresAt?: string;
 }
 
@@ -15,6 +15,15 @@ export interface PaperTag {
   id: string;
   name: string;
   color: string | null;
+  paperCount?: number;
+}
+
+export interface CollectionRecord {
+  id: string;
+  name: string;
+  description: string | null;
+  parentId: string | null;
+  paperCount?: number;
 }
 
 export interface PaperIdentifier {
@@ -250,6 +259,15 @@ export const api = {
       headers: { "if-match": String(version) },
     }),
   tags: async () => (await request<{ items: PaperTag[] }>("/v1/tags")).items,
+  createTag: (body: { name: string; color?: string | null }) =>
+    request<PaperTag>("/v1/tags", { method: "POST", body: JSON.stringify(body) }),
+  updateTag: (tagId: string, body: { name?: string; color?: string | null }) =>
+    request<PaperTag>(`/v1/tags/${encodeURIComponent(tagId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  removeTag: (tagId: string) =>
+    request<void>(`/v1/tags/${encodeURIComponent(tagId)}`, { method: "DELETE" }),
   addPaperTag: (paperId: string, tagId: string) =>
     request<void>(`/v1/papers/${encodeURIComponent(paperId)}/tags/${encodeURIComponent(tagId)}`, {
       method: "PUT",
@@ -258,8 +276,26 @@ export const api = {
     request<void>(`/v1/papers/${encodeURIComponent(paperId)}/tags/${encodeURIComponent(tagId)}`, {
       method: "DELETE",
     }),
-  collections: async () =>
-    (await request<{ items: Array<{ id: string; name: string }> }>("/v1/collections")).items,
+  collections: async () => (await request<{ items: CollectionRecord[] }>("/v1/collections")).items,
+  createCollection: (body: {
+    name: string;
+    description?: string | null;
+    parentId?: string | null;
+  }) =>
+    request<CollectionRecord>("/v1/collections", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  updateCollection: (
+    collectionId: string,
+    body: { name?: string; description?: string | null; parentId?: string | null },
+  ) =>
+    request<CollectionRecord>(`/v1/collections/${encodeURIComponent(collectionId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  removeCollection: (collectionId: string) =>
+    request<void>(`/v1/collections/${encodeURIComponent(collectionId)}`, { method: "DELETE" }),
   addPaperToCollection: (paperId: string, collectionId: string) =>
     request<void>(
       `/v1/collections/${encodeURIComponent(collectionId)}/papers/${encodeURIComponent(paperId)}`,
