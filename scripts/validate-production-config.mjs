@@ -101,33 +101,35 @@ if (!String(vars.APP_ORIGIN ?? "").startsWith("https://")) {
 }
 if (String(vars.APP_ORIGIN).includes("example.com")) fail("replace the APP_ORIGIN placeholder");
 let appOrigin;
-let googleRedirect;
 try {
   appOrigin = new URL(String(vars.APP_ORIGIN));
-  googleRedirect = new URL(String(vars.GOOGLE_REDIRECT_URI));
 } catch {
-  fail("APP_ORIGIN and GOOGLE_REDIRECT_URI must be valid absolute URLs");
+  fail("APP_ORIGIN must be a valid absolute URL");
 }
 if (
   !appOrigin ||
   appOrigin.protocol !== "https:" ||
   appOrigin.pathname !== "/" ||
   appOrigin.search !== "" ||
-  appOrigin.hash !== "" ||
-  !googleRedirect ||
-  googleRedirect.protocol !== "https:" ||
-  googleRedirect.origin !== appOrigin?.origin ||
-  googleRedirect.pathname !== "/v1/auth/callback/google" ||
-  googleRedirect.search !== "" ||
-  googleRedirect.hash !== ""
+  appOrigin.hash !== ""
 ) {
-  fail("APP_ORIGIN must be an HTTPS origin and GOOGLE_REDIRECT_URI its exact callback");
+  fail("APP_ORIGIN must be an HTTPS origin without a path, query, or fragment");
+}
+const accessTeamDomain = String(vars.ACCESS_TEAM_DOMAIN ?? "").trim();
+if (
+  !accessTeamDomain ||
+  accessTeamDomain.includes("replace-with") ||
+  accessTeamDomain.includes("example.com") ||
+  accessTeamDomain.startsWith("http://") ||
+  !accessTeamDomain.includes(".")
+) {
+  fail("replace ACCESS_TEAM_DOMAIN with the Cloudflare Access team domain");
+}
+if (!vars.ACCESS_AUDIENCE || String(vars.ACCESS_AUDIENCE).includes("replace-with")) {
+  fail("replace ACCESS_AUDIENCE with the Cloudflare Access application audience");
 }
 if (!/^[0-9a-f]{32}$/iu.test(String(vars.R2_ACCOUNT_ID ?? ""))) {
   fail("replace R2_ACCOUNT_ID with the 32-character Cloudflare account ID");
-}
-if (!vars.OWNER_EMAIL || String(vars.OWNER_EMAIL).includes("replace-with")) {
-  fail("replace the OWNER_EMAIL placeholder");
 }
 if (!vars.ALLOWED_EXTENSION_IDS || String(vars.ALLOWED_EXTENSION_IDS).includes("replace-with")) {
   fail("replace ALLOWED_EXTENSION_IDS with the packaged extension ID");

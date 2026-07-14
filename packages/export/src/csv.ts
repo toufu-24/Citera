@@ -14,6 +14,7 @@ const COLUMNS = [
   "publisher",
   "paperType",
   "status",
+  "readingStatus",
   "rating",
   "doi",
   "arxivId",
@@ -21,6 +22,7 @@ const COLUMNS = [
   "abstract",
   "keywords",
   "tags",
+  "noteMarkdown",
 ] as const;
 
 export function escapeCsv(value: string | number | boolean | null | undefined): string {
@@ -44,6 +46,7 @@ function row(paper: ExportPaper): string[] {
     paper.publisher ?? "",
     paper.paperType ?? "",
     paper.status ?? "",
+    paper.readingStatus ?? "",
     paper.rating == null ? "" : String(paper.rating),
     paper.doi ?? "",
     paper.arxivId ?? "",
@@ -51,6 +54,7 @@ function row(paper: ExportPaper): string[] {
     paper.abstract ?? "",
     paper.keywords?.join("; ") ?? "",
     tagNames(paper).join("; "),
+    paper.noteMarkdown ?? "",
   ];
 }
 

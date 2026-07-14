@@ -19,6 +19,7 @@ async function request(
   return exports.default.fetch(
     new Request(new URL(path, origin), {
       ...init,
+      redirect: "manual",
       headers,
       body,
     }),

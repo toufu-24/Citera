@@ -22,11 +22,13 @@ export interface ExportPaper {
   language?: string | null;
   paperType?: string | null;
   status?: string;
+  readingStatus?: string;
   rating?: number | null;
   doi?: string | null;
   arxivId?: string | null;
   sourceUrl?: string | null;
   abstract?: string | null;
+  noteMarkdown?: string | null;
   keywords?: string[];
   tags?: Array<string | { name: string }>;
   createdAt?: string;

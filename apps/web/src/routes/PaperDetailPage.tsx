@@ -20,7 +20,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { marked } from "marked";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { PdfUpload } from "../components/PdfUpload";
 import { PdfViewer } from "../components/PdfViewer";
@@ -31,6 +31,13 @@ const statusLabel: Record<PaperDetail["status"], string> = {
   reading: "読書中",
   read: "読了",
   archived: "保管済み",
+};
+
+const readingStatusLabel: Record<NonNullable<PaperDetail["readingStatus"]>, string> = {
+  unread: "未読",
+  reading: "読書中",
+  read: "読了",
+  on_hold: "保留",
 };
 
 function formString(form: FormData, name: string): string {
@@ -127,8 +134,10 @@ export function PaperDetailPage() {
   const [editing, setEditing] = useState(false);
   const [noteType, setNoteType] = useState<NoteRecord["noteType"]>("general");
   const [noteContent, setNoteContent] = useState("");
+  const [paperNote, setPaperNote] = useState<string | null>(null);
   const [tagEditorOpen, setTagEditorOpen] = useState(false);
   const [collectionEditorOpen, setCollectionEditorOpen] = useState(false);
+  const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
 
   const paper = useQuery({ queryKey: ["paper", paperId], queryFn: () => api.paper(paperId) });
   const duplicates = useQuery({
@@ -224,6 +233,35 @@ export function PaperDetailPage() {
     },
   });
 
+  const copyBibtex = useMutation({
+    mutationFn: () => api.bibtex(paperId),
+    onSuccess: async (content) => {
+      await navigator.clipboard.writeText(content);
+    },
+  });
+
+  const files = paper.data?.files ?? [];
+  const orderedFiles = useMemo(
+    () => [...files].sort(
+      (left, right) =>
+        Number(Boolean(right.isDefault)) - Number(Boolean(left.isDefault)) ||
+        (left.sortOrder ?? 0) - (right.sortOrder ?? 0),
+    ),
+    [files],
+  );
+  useEffect(() => {
+    if (paper.data && paperNote === null) setPaperNote(paper.data.noteMarkdown ?? "");
+  }, [paper.data, paperNote]);
+  useEffect(() => {
+    if (!selectedFileId || !files.some((file) => file.id === selectedFileId)) {
+      setSelectedFileId(
+        orderedFiles.find((file) => file.uploadState === "verified")?.id ??
+          orderedFiles[0]?.id ??
+          null,
+      );
+    }
+  }, [files, orderedFiles, selectedFileId]);
+
   if (paper.isLoading) {
     return (
       <div className="page">
@@ -250,7 +288,7 @@ export function PaperDetailPage() {
   }
 
   const data = paper.data;
-  const pdf = data.files.find((file) => file.uploadState === "verified") ?? data.files[0];
+  const pdf = files.find((file) => file.id === selectedFileId) ?? orderedFiles.find((file) => file.uploadState === "verified") ?? orderedFiles[0];
   const doi = data.identifiers.find(
     (identifier) => (identifier.identifierType ?? identifier.type) === "doi",
   )?.normalizedValue;
@@ -294,8 +332,45 @@ export function PaperDetailPage() {
           <button type="button" className="icon-button" aria-label="その他">
             <MoreHorizontal size={19} />
           </button>
+          <button
+            type="button"
+            className="button secondary compact"
+            onClick={() => copyBibtex.mutate()}
+            disabled={copyBibtex.isPending}
+          >
+            BibTeXをコピー
+          </button>
         </div>
       </header>
+
+      {orderedFiles.length > 0 && (
+        <nav className="pdf-file-tabs" aria-label="PDFを切り替え">
+          {orderedFiles.map((file) => (
+            <button
+              key={file.id}
+              type="button"
+              className={file.id === pdf?.id ? "active" : ""}
+              onClick={() => setSelectedFileId(file.id)}
+            >
+              {file.label ?? file.originalName}
+              {file.isDefault ? " ★" : ""}
+            </button>
+          ))}
+          {pdf && !pdf.isDefault && (
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => {
+                void api.updateFile(pdf.id, { isDefault: true }).then(() => {
+                  void queryClient.invalidateQueries({ queryKey: ["paper", paperId] });
+                });
+              }}
+            >
+              このPDFを既定にする
+            </button>
+          )}
+        </nav>
+      )}
 
       <div className="mobile-detail-tabs" role="tablist" aria-label="論文詳細の表示">
         <button
@@ -352,6 +427,20 @@ export function PaperDetailPage() {
                   disabled={update.isPending}
                 >
                   {Object.entries(statusLabel).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="status-badge status-reading">
+                <span className="sr-only">読書状態</span>
+                <select
+                  value={data.readingStatus ?? "unread"}
+                  onChange={(event) => update.mutate({ readingStatus: event.target.value })}
+                  disabled={update.isPending}
+                >
+                  {Object.entries(readingStatusLabel).map(([value, label]) => (
                     <option key={value} value={value}>
                       {label}
                     </option>
@@ -668,6 +757,29 @@ export function PaperDetailPage() {
                 </div>
               )}
             </div>
+          </section>
+
+          <section className="metadata-section paper-note-section">
+            <header>
+              <div>
+                <p className="eyebrow">PAPER NOTE</p>
+                <h2>Markdownメモ</h2>
+              </div>
+              <span className="muted-copy">論文ごとに1件</span>
+            </header>
+            <textarea
+              value={paperNote ?? ""}
+              onChange={(event) => setPaperNote(event.target.value)}
+              onBlur={() => {
+                if (paperNote !== (data.noteMarkdown ?? "")) {
+                  update.mutate({ noteMarkdown: paperNote ?? null });
+                }
+              }}
+              rows={8}
+              placeholder="要点、重要な数式、実験条件、研究との関連など…"
+              aria-label="論文のMarkdownメモ"
+            />
+            <p className="muted-copy">入力欄からフォーカスを外すと保存します。</p>
           </section>
 
           <section className="danger-zone">

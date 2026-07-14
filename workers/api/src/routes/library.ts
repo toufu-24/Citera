@@ -159,8 +159,8 @@ tagsRoutes.post("/", async (c) => {
   };
   await c.env.DB.batch([
     c.env.DB.prepare(
-      "INSERT INTO tags (id,user_id,name,normalized_name,color,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
-    ).bind(id, userId, input.name, normalized, input.color ?? null, now, now),
+      "INSERT INTO tags (id,user_id,library_id,name,normalized_name,color,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)",
+    ).bind(id, userId, c.get("libraryId"), input.name, normalized, input.color ?? null, now, now),
     changeStatement(c.env.DB, {
       userId,
       entityType: "tag",
@@ -265,9 +265,9 @@ paperTagsRoutes.put("/:paperId/tags/:tagId", async (c) => {
   if (!tag) throw new ApiError(404, "TAG_NOT_FOUND", "Tag was not found.");
   const now = nowUtcIso();
   const result = await c.env.DB.prepare(
-    "INSERT OR IGNORE INTO paper_tags (user_id,paper_id,tag_id,created_at) VALUES (?,?,?,?)",
+    "INSERT OR IGNORE INTO paper_tags (user_id,paper_id,tag_id,library_id,created_at) VALUES (?,?,?,?,?)",
   )
-    .bind(userId, paperId, tagId, now)
+    .bind(userId, paperId, tagId, c.get("libraryId"), now)
     .run();
   if (result.meta.changes === 1) {
     await changeStatement(c.env.DB, {
@@ -564,12 +564,13 @@ notesRoutes.post("/papers/:paperId/notes", async (c) => {
   await c.env.DB.batch([
     c.env.DB.prepare(
       `INSERT INTO notes
-        (id,user_id,paper_id,parent_note_id,note_type,page_number,anchor_json,content_markdown,version,created_at,updated_at,deleted_at)
-       VALUES (?,?,?,?,?,?,?,?,1,?,?,NULL)`,
+        (id,user_id,paper_id,library_id,parent_note_id,note_type,page_number,anchor_json,content_markdown,version,created_at,updated_at,deleted_at)
+       VALUES (?,?,?,?,?,?,?,?,?,1,?,?,NULL)`,
     ).bind(
       id,
       userId,
       paperId,
+      c.get("libraryId"),
       input.parentNoteId ?? null,
       input.noteType,
       input.pageNumber ?? null,

@@ -9,7 +9,7 @@ import {
   normalizeUrl,
   parseArxivId,
 } from "@citera/domain";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { all, changeStatement, first } from "../db";
 import { ApiError } from "../errors";
@@ -25,8 +25,24 @@ const uploadSchema = z.object({
   sizeBytes: z.number().int().positive(),
   originalName: z.string().trim().min(1).max(500),
   kind: z.enum(["original_pdf", "supplement"]).default("original_pdf"),
+  fileKind: z.enum(["fulltext", "translation", "bilingual", "supplement", "other"]).optional(),
+  label: z.string().trim().max(200).nullable().optional(),
+  languageCode: z.enum(["ja", "en", "de", "fr", "zh-Hans", "zh-Hant"]).nullable().optional(),
+  isDefault: z.boolean().default(false),
+  sortOrder: z.number().int().min(0).max(10_000).default(0),
   ingestionId: z.string().min(1).optional(),
 });
+
+const filePatchSchema = z
+  .object({
+    label: z.string().trim().max(200).nullable().optional(),
+    fileKind: z.enum(["fulltext", "translation", "bilingual", "supplement", "other"]).optional(),
+    languageCode: z.enum(["ja", "en", "de", "fr", "zh-Hans", "zh-Hant"]).nullable().optional(),
+    isDefault: z.boolean().optional(),
+    sortOrder: z.number().int().min(0).max(10_000).optional(),
+  })
+  .strict()
+  .refine((value) => Object.keys(value).length > 0, "At least one file field is required");
 
 const ingestionPaperSchema = z.object({
   title: z.string().trim().min(1).max(10_000),
@@ -82,6 +98,11 @@ interface FileRow extends Record<string, unknown> {
   size_bytes: number;
   original_name: string;
   kind: "original_pdf" | "supplement";
+  label: string | null;
+  file_kind: "fulltext" | "translation" | "bilingual" | "supplement" | "other" | null;
+  language_code: string | null;
+  is_default: number;
+  sort_order: number;
   upload_state: "pending" | "uploaded" | "verified" | "failed";
   deleted_at: string | null;
 }
@@ -103,6 +124,22 @@ interface IngestionRow extends Record<string, unknown> {
 }
 
 function fileResponse(file: FileRow): Record<string, unknown> {
+  const fileKind = file.file_kind ?? (file.kind === "supplement" ? "supplement" : "fulltext");
+  const languageLabels: Record<string, string> = {
+    ja: "日本語",
+    en: "英語",
+    de: "ドイツ語",
+    fr: "フランス語",
+    "zh-Hans": "中国語（簡体）",
+    "zh-Hant": "中国語（繁体）",
+  };
+  const kindLabels: Record<string, string> = {
+    fulltext: "本文",
+    translation: "翻訳版",
+    bilingual: "対訳版",
+    supplement: "補足資料",
+    other: "その他",
+  };
   return {
     id: file.id,
     paperId: file.paper_id,
@@ -112,6 +149,11 @@ function fileResponse(file: FileRow): Record<string, unknown> {
     sizeBytes: file.size_bytes,
     originalName: file.original_name,
     kind: file.kind,
+    fileKind,
+    label: file.label ?? `${kindLabels[fileKind] ?? "PDF"}${file.language_code ? `（${languageLabels[file.language_code] ?? file.language_code}）` : ""}`,
+    languageCode: file.language_code,
+    isDefault: file.is_default === 1,
+    sortOrder: file.sort_order,
     uploadState: file.upload_state,
     deletedAt: file.deleted_at,
   };
@@ -372,8 +414,7 @@ ingestionsRoutes.post("/", async (c) => {
       if (uniqueIds.length) {
         const owned = await first<{ count: number } & Record<string, unknown>>(
           c.env.DB,
-          `SELECT COUNT(*) AS count FROM ${table} WHERE user_id=? AND id IN (${uniqueIds.map(() => "?").join(",")}) ${
-            table === "collections" ? "AND deleted_at IS NULL" : ""
+          `SELECT COUNT(*) AS count FROM ${table} WHERE user_id=? AND id IN (${uniqueIds.map(() => "?").join(",")}) ${table === "collections" ? "AND deleted_at IS NULL" : ""
           }`,
           userId,
           ...uniqueIds,
@@ -388,18 +429,26 @@ ingestionsRoutes.post("/", async (c) => {
     const statements: D1PreparedStatement[] = [
       c.env.DB.prepare(
         `INSERT INTO papers
-          (id,user_id,title,abstract,publication_year,venue,paper_type,status,source_url,metadata_state,
-           search_text,version,created_at,updated_at)
-         VALUES (?,?,?,?,?,?,?,?,?,'pending',?,1,?,?)`,
+          (id,user_id,library_id,title,abstract,publication_year,venue,paper_type,status,reading_status,
+           source_url,metadata_state,search_text,version,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,'pending',?,1,?,?)`,
       ).bind(
         paperId,
         userId,
+        c.get("libraryId"),
         input.paper.title,
         input.paper.abstract ?? null,
         input.paper.publicationYear ?? null,
         input.paper.venue ?? null,
         input.paper.paperType,
         input.paper.status,
+        input.paper.status === "reading"
+          ? "reading"
+          : input.paper.status === "read"
+            ? "read"
+            : input.paper.status === "archived"
+              ? "on_hold"
+              : "unread",
         input.paper.sourceUrl ?? input.sourceUrl ?? null,
         normalizeComparableText(
           [
@@ -458,8 +507,8 @@ ingestionsRoutes.post("/", async (c) => {
     for (const tagId of new Set(input.paper.tagIds)) {
       statements.push(
         c.env.DB.prepare(
-          "INSERT INTO paper_tags (user_id,paper_id,tag_id,created_at) VALUES (?,?,?,?)",
-        ).bind(userId, paperId, tagId, now),
+          "INSERT INTO paper_tags (user_id,paper_id,tag_id,library_id,created_at) VALUES (?,?,?,?,?)",
+        ).bind(userId, paperId, tagId, c.get("libraryId"), now),
       );
     }
     for (const collectionId of new Set(input.paper.collectionIds)) {
@@ -567,10 +616,10 @@ ingestionsRoutes.post("/:ingestionId/complete", async (c) => {
   if (row.state === "complete") {
     const jobs = row.paper_id
       ? await ingestionMaintenanceJobs(c.env.DB, {
-          userId,
-          paperId: row.paper_id,
-          ingestionId: row.id,
-        })
+        userId,
+        paperId: row.paper_id,
+        ingestionId: row.id,
+      })
       : [];
     if (jobs.length) {
       await c.env.DB.batch(jobs.map((job) => jobOutboxStatement(c.env.DB, job)));
@@ -600,10 +649,10 @@ ingestionsRoutes.post("/:ingestionId/complete", async (c) => {
   };
   const jobs = row.paper_id
     ? await ingestionMaintenanceJobs(c.env.DB, {
-        userId,
-        paperId: row.paper_id,
-        ingestionId: row.id,
-      })
+      userId,
+      paperId: row.paper_id,
+      ingestionId: row.id,
+    })
     : [];
   await c.env.DB.batch([
     c.env.DB.prepare(
@@ -623,10 +672,10 @@ ingestionsRoutes.post("/:ingestionId/retry", async (c) => {
   const now = nowUtcIso();
   const jobs = row.paper_id
     ? await ingestionMaintenanceJobs(c.env.DB, {
-        userId,
-        paperId: row.paper_id,
-        ingestionId: row.id,
-      })
+      userId,
+      paperId: row.paper_id,
+      ingestionId: row.id,
+    })
     : [];
   await c.env.DB.batch([
     c.env.DB.prepare(
@@ -640,10 +689,10 @@ ingestionsRoutes.post("/:ingestionId/retry", async (c) => {
 
 export const filesRoutes = new Hono<AppBindings>();
 
-filesRoutes.post("/papers/:paperId/files/upload-url", async (c) => {
+const createUploadTicket = async (c: Context<AppBindings>): Promise<Response> => {
   const input = uploadSchema.parse(await c.req.json());
   const userId = c.get("user").id;
-  const paperId = c.req.param("paperId");
+  const paperId = c.req.param("paperId") ?? c.req.param("itemId");
   const maxBytes = requirePositiveInt(
     c.env.MAX_PDF_BYTES,
     100 * 1024 * 1024,
@@ -652,7 +701,7 @@ filesRoutes.post("/papers/:paperId/files/upload-url", async (c) => {
   if (input.sizeBytes > maxBytes) {
     throw new ApiError(
       413,
-      "PDF_TOO_LARGE",
+      "FILE_TOO_LARGE",
       "The PDF exceeds this Citera instance's configured size limit.",
       {
         maxBytes,
@@ -660,7 +709,7 @@ filesRoutes.post("/papers/:paperId/files/upload-url", async (c) => {
     );
   }
   if (input.mediaType.toLowerCase() !== "application/pdf") {
-    throw new ApiError(422, "MEDIA_TYPE_INVALID", "PDF uploads must use application/pdf.");
+    throw new ApiError(422, "FILE_NOT_PDF", "PDF uploads must use application/pdf.");
   }
   const storageLimit = requirePositiveInt(
     c.env.MAX_USER_STORAGE_BYTES,
@@ -691,70 +740,107 @@ filesRoutes.post("/papers/:paperId/files/upload-url", async (c) => {
     userId,
   );
   if (!paper) throw new ApiError(404, "PAPER_NOT_FOUND", "Paper was not found.");
+  if (!paperId) throw new ApiError(404, "PAPER_NOT_FOUND", "Paper was not found.");
   if (input.ingestionId) await requireIngestion(c.env.DB, userId, input.ingestionId);
+  const fileKind = input.fileKind ?? (input.kind === "supplement" ? "supplement" : "fulltext");
+  const storageKind = fileKind === "supplement" ? "supplement" : "original_pdf";
   const duplicate = await first<FileRow>(
     c.env.DB,
-    "SELECT * FROM files WHERE user_id=? AND sha256=? AND kind=? AND deleted_at IS NULL LIMIT 1",
+    `SELECT * FROM files
+     WHERE user_id=? AND paper_id=? AND sha256=? AND deleted_at IS NULL
+     ORDER BY created_at LIMIT 1`,
     userId,
+    paperId,
     input.sha256,
-    input.kind,
   );
-  if (duplicate) {
-    if (duplicate.paper_id !== paperId) {
-      throw new ApiError(409, "DUPLICATE_FILE", "This PDF is already attached to another paper.", {
-        paperId: duplicate.paper_id,
-        fileId: duplicate.id,
-      });
-    }
+  if (duplicate?.upload_state === "verified" || duplicate?.upload_state === "uploaded") {
     return c.json({ file: fileResponse(duplicate), upload: null, duplicate: true });
   }
-  const fileId = createId("fil");
-  const r2Key = objectKeyFor({
+  const fileId = duplicate?.id ?? createId("fil");
+  const r2Key = duplicate?.r2_key ?? objectKeyFor({
     userId,
     paperId,
     fileId,
-    kind: input.kind,
+    kind: storageKind,
     extension: "pdf",
   });
   const now = nowUtcIso();
-  await c.env.DB.prepare(
-    `INSERT INTO files
-      (id,user_id,paper_id,ingestion_id,r2_key,sha256,media_type,size_bytes,original_name,kind,upload_state,created_at,deleted_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,'pending',?,NULL)`,
-  )
-    .bind(
-      fileId,
-      userId,
-      paperId,
-      input.ingestionId ?? null,
-      r2Key,
-      input.sha256,
-      input.mediaType,
-      input.sizeBytes,
-      input.originalName,
-      input.kind,
-      now,
+  if (input.isDefault) {
+    await c.env.DB.prepare("UPDATE files SET is_default=0 WHERE paper_id=? AND deleted_at IS NULL")
+      .bind(paperId)
+      .run();
+  }
+  if (duplicate) {
+    await c.env.DB.prepare(
+      `UPDATE files SET ingestion_id=?,media_type=?,size_bytes=?,original_name=?,kind=?,
+       label=?,file_kind=?,language_code=?,is_default=?,sort_order=?,upload_state='pending',deleted_at=NULL
+       WHERE id=? AND user_id=? AND paper_id=?`,
     )
-    .run();
+      .bind(
+        input.ingestionId ?? duplicate.ingestion_id,
+        input.mediaType,
+        input.sizeBytes,
+        input.originalName,
+        storageKind,
+        input.label ?? duplicate.label,
+        fileKind,
+        input.languageCode ?? duplicate.language_code,
+        input.isDefault ? 1 : duplicate.is_default,
+        input.sortOrder,
+        fileId,
+        userId,
+        paperId,
+      )
+      .run();
+  } else {
+    await c.env.DB.prepare(
+      `INSERT INTO files
+        (id,user_id,paper_id,ingestion_id,r2_key,sha256,media_type,size_bytes,original_name,kind,
+         label,file_kind,language_code,is_default,sort_order,upload_state,created_at,deleted_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,NULL)`,
+    )
+      .bind(
+        fileId,
+        userId,
+        paperId,
+        input.ingestionId ?? null,
+        r2Key,
+        input.sha256,
+        input.mediaType,
+        input.sizeBytes,
+        input.originalName,
+        storageKind,
+        input.label ?? null,
+        fileKind,
+        input.languageCode ?? null,
+        input.isDefault ? 1 : 0,
+        input.sortOrder,
+        now,
+      )
+      .run();
+  }
   const ttl = requirePositiveInt(c.env.PRESIGN_TTL_SECONDS, 300, 900);
   const upload =
     c.env.ENVIRONMENT === "production"
       ? await presignR2(c.env, {
-          key: r2Key,
-          method: "PUT",
-          contentType: input.mediaType,
-          contentLength: input.sizeBytes,
-          sha256: input.sha256,
-          expiresIn: ttl,
-        })
+        key: r2Key,
+        method: "PUT",
+        contentType: input.mediaType,
+        contentLength: input.sizeBytes,
+        sha256: input.sha256,
+        expiresIn: ttl,
+      })
       : {
-          url: new URL(`/v1/files/${fileId}/content`, c.req.url).toString(),
-          headers: { "Content-Type": input.mediaType, "If-None-Match": "*" },
-          expiresIn: ttl,
-        };
+        url: new URL(`${c.req.path.startsWith("/api/v1") ? "/api/v1" : "/v1"}/files/${fileId}/content`, c.env.APP_ORIGIN).toString(),
+        headers: { "Content-Type": input.mediaType, "If-None-Match": "*" },
+        expiresIn: ttl,
+      };
   const file = await requireFile(c.env.DB, userId, fileId);
-  return c.json({ file: fileResponse(file), upload, duplicate: false }, 201);
-});
+  return c.json({ file: fileResponse(file), upload, duplicate: Boolean(duplicate) }, duplicate ? 200 : 201);
+};
+
+filesRoutes.post("/papers/:paperId/files/upload-url", createUploadTicket);
+filesRoutes.post("/items/:itemId/files/upload-ticket", createUploadTicket);
 
 filesRoutes.put("/files/:fileId/content", async (c) => {
   if (c.env.ENVIRONMENT === "production") throw new ApiError(404, "NOT_FOUND", "Route not found.");
@@ -777,45 +863,42 @@ filesRoutes.put("/files/:fileId/content", async (c) => {
       "The uploaded file size does not match the declaration.",
     );
   }
-  if (!c.req.raw.body) throw new ApiError(422, "FILE_BODY_REQUIRED", "A file body is required.");
-  let received = 0;
-  const limitedBody = c.req.raw.body.pipeThrough(
-    new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        received += chunk.byteLength;
-        if (received > file.size_bytes) {
-          throw new ApiError(
-            422,
-            "FILE_SIZE_MISMATCH",
-            "The uploaded file size exceeds the declaration.",
-          );
-        }
-        controller.enqueue(chunk);
-      },
-    }),
-  );
+  const body = c.req.raw.body;
+  if (!body) {
+    throw new ApiError(422, "FILE_BODY_REQUIRED", "A file body is required.");
+  }
+
+  const { readable, writable } = new FixedLengthStream(file.size_bytes);
+
   try {
-    await c.env.FILES.put(file.r2_key, limitedBody, {
+    const putPromise = c.env.FILES.put(file.r2_key, readable, {
       httpMetadata: { contentType: file.media_type },
-      customMetadata: { userId: file.user_id, paperId: file.paper_id, fileId: file.id },
+      customMetadata: {
+        userId: file.user_id,
+        paperId: file.paper_id,
+        fileId: file.id,
+      },
       sha256: file.sha256,
       onlyIf: { etagDoesNotMatch: "*" },
     });
+
+    const pipePromise = body.pipeTo(writable);
+
+    await Promise.all([putPromise, pipePromise]);
   } catch (error) {
+    console.error("PDF upload failed", {
+      fileId: file.id,
+      expectedSize: file.size_bytes,
+      error,
+    });
+
     await invalidateUploadedFile(c.env, file);
+
     if (error instanceof ApiError) throw error;
     throw new ApiError(
       422,
-      "FILE_CHECKSUM_MISMATCH",
-      "The uploaded file checksum does not match the declaration.",
-    );
-  }
-  if (received !== file.size_bytes) {
-    await invalidateUploadedFile(c.env, file);
-    throw new ApiError(
-      422,
-      "FILE_SIZE_MISMATCH",
-      "The uploaded file size does not match the declaration.",
+      "FILE_UPLOAD_FAILED",
+      error instanceof Error ? error.message : "The PDF upload failed.",
     );
   }
   await c.env.DB.prepare(
@@ -847,6 +930,12 @@ filesRoutes.post("/files/:fileId/complete", async (c) => {
     c.executionCtx.waitUntil(dispatchOutboxJobs(c.env, jobs));
     return c.json(fileResponse(file));
   }
+  if (file.upload_state === "pending") {
+    throw new ApiError(409, "FILE_UPLOAD_PENDING", "The file has not finished uploading.");
+  }
+  if (file.upload_state === "failed") {
+    throw new ApiError(409, "FILE_UPLOAD_FAILED", "The file upload failed and must be retried.");
+  }
   const head = await c.env.FILES.head(file.r2_key);
   if (!head) throw new ApiError(409, "UPLOAD_NOT_FOUND", "The uploaded R2 object was not found.");
   if (head.size !== file.size_bytes) {
@@ -876,7 +965,7 @@ filesRoutes.post("/files/:fileId/complete", async (c) => {
   const prefix = new TextDecoder().decode(await prefixObject.arrayBuffer());
   if (prefix !== "%PDF-") {
     await invalidateUploadedFile(c.env, file);
-    throw new ApiError(422, "PDF_MAGIC_INVALID", "The uploaded object is not a PDF.");
+    throw new ApiError(422, "FILE_NOT_PDF", "The uploaded object is not a PDF.");
   }
   const now = nowUtcIso();
   const paper = await first<{ version: number } & Record<string, unknown>>(
@@ -907,8 +996,40 @@ filesRoutes.post("/files/:fileId/complete", async (c) => {
     }),
     ...jobs.map((job) => jobOutboxStatement(c.env.DB, job, now)),
   ]);
+  const hasDefault = await first<{ count: number } & Record<string, unknown>>(
+    c.env.DB,
+    "SELECT COUNT(*) AS count FROM files WHERE paper_id=? AND is_default=1 AND deleted_at IS NULL",
+    file.paper_id,
+  );
+  if (Number(hasDefault?.count ?? 0) === 0) {
+    await c.env.DB.prepare(
+      "UPDATE files SET is_default=1 WHERE id=? AND user_id=? AND deleted_at IS NULL",
+    )
+      .bind(file.id, userId)
+      .run();
+  }
   c.executionCtx.waitUntil(dispatchOutboxJobs(c.env, jobs));
-  return c.json({ ...fileResponse(file), uploadState: "verified" });
+  const verified = await requireFile(c.env.DB, userId, file.id);
+  return c.json(fileResponse(verified));
+});
+
+filesRoutes.get("/items/:itemId/files", async (c) => {
+  const userId = c.get("user").id;
+  const paperId = c.req.param("itemId");
+  const paper = await first<Record<string, unknown>>(
+    c.env.DB,
+    "SELECT id FROM papers WHERE id=? AND user_id=?",
+    paperId,
+    userId,
+  );
+  if (!paper) throw new ApiError(404, "PAPER_NOT_FOUND", "Paper was not found.");
+  const files = await all<FileRow>(
+    c.env.DB,
+    "SELECT * FROM files WHERE paper_id=? AND user_id=? AND deleted_at IS NULL ORDER BY is_default DESC, sort_order, created_at",
+    paperId,
+    userId,
+  );
+  return c.json({ items: files.map(fileResponse) });
 });
 
 filesRoutes.get("/files/:fileId/download-url", async (c) => {
@@ -921,11 +1042,105 @@ filesRoutes.get("/files/:fileId/download-url", async (c) => {
     c.env.ENVIRONMENT === "production"
       ? await presignR2(c.env, { key: file.r2_key, method: "GET", expiresIn: ttl })
       : {
-          url: new URL(`/v1/files/${file.id}/content`, c.req.url).toString(),
-          headers: {},
-          expiresIn: ttl,
-        };
+        url: new URL(`${c.req.path.startsWith("/api/v1") ? "/api/v1" : "/v1"}/files/${file.id}/content`, c.env.APP_ORIGIN).toString(),
+        headers: {},
+        expiresIn: ttl,
+      };
   return c.json({ ...download, fileName: file.original_name, mediaType: file.media_type });
+});
+
+filesRoutes.get("/files/:fileId/download-ticket", async (c) => {
+  const file = await requireFile(c.env.DB, c.get("user").id, c.req.param("fileId"));
+  if (file.deleted_at || file.upload_state !== "verified") {
+    throw new ApiError(409, "FILE_NOT_VERIFIED", "Only verified files can be downloaded.");
+  }
+  const ttl = requirePositiveInt(c.env.PRESIGN_TTL_SECONDS, 300, 900);
+  const download =
+    c.env.ENVIRONMENT === "production"
+      ? await presignR2(c.env, { key: file.r2_key, method: "GET", expiresIn: ttl })
+      : {
+        url: new URL(`${c.req.path.startsWith("/api/v1") ? "/api/v1" : "/v1"}/files/${file.id}/content`, c.env.APP_ORIGIN).toString(),
+        headers: {},
+        expiresIn: ttl,
+      };
+  return c.json({ ...download, fileName: file.original_name, mediaType: file.media_type });
+});
+
+filesRoutes.patch("/files/:fileId", async (c) => {
+  const input = filePatchSchema.parse(await c.req.json());
+  const userId = c.get("user").id;
+  const file = await requireFile(c.env.DB, userId, c.req.param("fileId"));
+  if (file.deleted_at) throw new ApiError(404, "FILE_NOT_FOUND", "File was not found.");
+  const fileKind = input.fileKind ?? file.file_kind ?? (file.kind === "supplement" ? "supplement" : "fulltext");
+  const storageKind = fileKind === "supplement" ? "supplement" : "original_pdf";
+  const isDefault = input.isDefault === undefined ? file.is_default : input.isDefault ? 1 : 0;
+  const now = nowUtcIso();
+  const statements: D1PreparedStatement[] = [];
+  if (isDefault === 1) {
+    statements.push(
+      c.env.DB.prepare("UPDATE files SET is_default=0 WHERE paper_id=? AND user_id=? AND id<>? AND deleted_at IS NULL").bind(
+        file.paper_id,
+        userId,
+        file.id,
+      ),
+    );
+  }
+  statements.push(
+    c.env.DB.prepare(
+      `UPDATE files SET label=?,file_kind=?,language_code=?,kind=?,is_default=?,sort_order=?
+       WHERE id=? AND user_id=? AND deleted_at IS NULL`,
+    ).bind(
+      input.label === undefined ? file.label : input.label,
+      fileKind,
+      input.languageCode === undefined ? file.language_code : input.languageCode,
+      storageKind,
+      isDefault,
+      input.sortOrder === undefined ? file.sort_order : input.sortOrder,
+      file.id,
+      userId,
+    ),
+    changeStatement(c.env.DB, {
+      userId,
+      entityType: "file",
+      entityId: file.id,
+      operation: "update",
+      version: 1,
+      data: { id: file.id, paperId: file.paper_id, fileKind, isDefault: Boolean(isDefault), updatedAt: now },
+      changedAt: now,
+    }),
+  );
+  await c.env.DB.batch(statements);
+  return c.json(fileResponse(await requireFile(c.env.DB, userId, file.id)));
+});
+
+filesRoutes.post("/files/:fileId/retry", async (c) => {
+  const userId = c.get("user").id;
+  const file = await requireFile(c.env.DB, userId, c.req.param("fileId"));
+  if (file.deleted_at) throw new ApiError(404, "FILE_NOT_FOUND", "File was not found.");
+  if (file.upload_state !== "failed") {
+    throw new ApiError(409, "FILE_UPLOAD_NOT_FAILED", "Only failed uploads can be retried.");
+  }
+  await c.env.FILES.delete(file.r2_key);
+  await c.env.DB.prepare("UPDATE files SET upload_state='pending' WHERE id=? AND user_id=?")
+    .bind(file.id, userId)
+    .run();
+  const ttl = requirePositiveInt(c.env.PRESIGN_TTL_SECONDS, 300, 900);
+  const upload =
+    c.env.ENVIRONMENT === "production"
+      ? await presignR2(c.env, {
+        key: file.r2_key,
+        method: "PUT",
+        contentType: file.media_type,
+        contentLength: file.size_bytes,
+        sha256: file.sha256,
+        expiresIn: ttl,
+      })
+      : {
+        url: new URL(`${c.req.path.startsWith("/api/v1") ? "/api/v1" : "/v1"}/files/${file.id}/content`, c.env.APP_ORIGIN).toString(),
+        headers: { "Content-Type": file.media_type, "If-None-Match": "*" },
+        expiresIn: ttl,
+      };
+  return c.json({ file: fileResponse(await requireFile(c.env.DB, userId, file.id)), upload }, 202);
 });
 
 filesRoutes.get("/files/:fileId/content", async (c) => {
@@ -960,20 +1175,7 @@ filesRoutes.get("/files/:fileId/content", async (c) => {
 filesRoutes.delete("/files/:fileId", async (c) => {
   const userId = c.get("user").id;
   const file = await requireFile(c.env.DB, userId, c.req.param("fileId"));
-  const cleanupJob: JobMessage = {
-    jobId: createId("job"),
-    type: "object.cleanup",
-    userId,
-    paperId: file.paper_id,
-    fileId: file.id,
-    sourceVersion: 1,
-    attempt: 1,
-  };
-  if (file.deleted_at) {
-    await jobOutboxStatement(c.env.DB, cleanupJob).run();
-    c.executionCtx.waitUntil(dispatchOutboxJobs(c.env, [cleanupJob]));
-    return c.body(null, 204);
-  }
+  if (file.deleted_at) return c.body(null, 204);
   const now = nowUtcIso();
   await c.env.DB.batch([
     c.env.DB.prepare("UPDATE files SET deleted_at=? WHERE id=? AND user_id=?").bind(
@@ -990,8 +1192,49 @@ filesRoutes.delete("/files/:fileId", async (c) => {
       data: { id: file.id, paperId: file.paper_id, deletedAt: now },
       changedAt: now,
     }),
-    jobOutboxStatement(c.env.DB, cleanupJob, now),
   ]);
-  c.executionCtx.waitUntil(dispatchOutboxJobs(c.env, [cleanupJob]));
+  if (file.is_default === 1) {
+    const replacement = await first<{ id: string } & Record<string, unknown>>(
+      c.env.DB,
+      `SELECT id FROM files
+       WHERE paper_id=? AND user_id=? AND deleted_at IS NULL
+       ORDER BY (upload_state='verified') DESC, (file_kind='fulltext') DESC, sort_order, created_at
+       LIMIT 1`,
+      file.paper_id,
+      userId,
+    );
+    if (replacement) {
+      await c.env.DB.prepare("UPDATE files SET is_default=1 WHERE id=? AND user_id=?")
+        .bind(replacement.id, userId)
+        .run();
+    }
+  }
   return c.body(null, 204);
+});
+
+filesRoutes.post("/files/:fileId/restore", async (c) => {
+  const userId = c.get("user").id;
+  const file = await requireFile(c.env.DB, userId, c.req.param("fileId"));
+  if (!file.deleted_at) return c.json(fileResponse(file));
+  const now = nowUtcIso();
+  const activeDefault = await first<{ id: string } & Record<string, unknown>>(
+    c.env.DB,
+    "SELECT id FROM files WHERE paper_id=? AND is_default=1 AND deleted_at IS NULL LIMIT 1",
+    file.paper_id,
+  );
+  await c.env.DB.prepare(
+    "UPDATE files SET deleted_at=NULL,is_default=? WHERE id=? AND user_id=?",
+  )
+    .bind(activeDefault ? 0 : 1, file.id, userId)
+    .run();
+  await changeStatement(c.env.DB, {
+    userId,
+    entityType: "file",
+    entityId: file.id,
+    operation: "restore",
+    version: 1,
+    data: { id: file.id, paperId: file.paper_id, restoredAt: now },
+    changedAt: now,
+  }).run();
+  return c.json(fileResponse(await requireFile(c.env.DB, userId, file.id)));
 });

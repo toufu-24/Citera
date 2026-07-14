@@ -23,6 +23,7 @@ export interface CslJsonItem {
   DOI?: string;
   URL?: string;
   abstract?: string;
+  note?: string;
   keyword?: string;
 }
 
@@ -94,6 +95,7 @@ export function toCslJson(papers: readonly ExportPaper[]): CslJsonItem[] {
       ...(paper.doi == null ? {} : { DOI: paper.doi }),
       ...(paper.sourceUrl == null ? {} : { URL: paper.sourceUrl }),
       ...(paper.abstract == null ? {} : { abstract: paper.abstract }),
+      ...(paper.noteMarkdown == null ? {} : { note: paper.noteMarkdown }),
       ...(keywords.length === 0 ? {} : { keyword: keywords.join(", ") }),
     };
   });

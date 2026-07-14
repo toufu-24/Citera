@@ -76,6 +76,7 @@ export function exportBibTeX(papers: readonly ExportPaper[]): string {
       addField(fields, "doi", paper.doi);
       addField(fields, "url", paper.sourceUrl);
       addField(fields, "abstract", paper.abstract);
+      addField(fields, "note", paper.noteMarkdown);
       const keywords = [...new Set([...(paper.keywords ?? []), ...tagNames(paper)])];
       if (keywords.length > 0) addField(fields, "keywords", keywords.join(", "));
       return `@${entryType(paper.paperType)}{${keys[index] ?? "item"},\n${fields.join(",\n")}\n}`;

@@ -54,6 +54,7 @@ export function exportRis(papers: readonly ExportPaper[]): string {
       add(lines, "DO", paper.doi);
       add(lines, "UR", paper.sourceUrl);
       add(lines, "AB", paper.abstract);
+      add(lines, "N1", paper.noteMarkdown);
       for (const keyword of [...new Set([...(paper.keywords ?? []), ...tagNames(paper)])]) {
         add(lines, "KW", keyword);
       }

@@ -125,6 +125,8 @@ export function LibraryPage() {
   const deferredQuery = useDeferredValue(query);
   const [status, setStatus] = useState<StatusFilter>("all");
   const [hasPdf, setHasPdf] = useState<"all" | "true" | "false">("all");
+  const [hasTranslation, setHasTranslation] = useState<"all" | "true" | "false">("all");
+  const [recentOnly, setRecentOnly] = useState(false);
   const [yearFrom, setYearFrom] = useState("");
   const [yearTo, setYearTo] = useState("");
   const [sort, setSort] = useState("updated_at:desc");
@@ -141,10 +143,12 @@ export function LibraryPage() {
     if (status === "deleted") params.set("deleted", "only");
     else if (status !== "all") params.set("status", status);
     if (hasPdf !== "all") params.set("hasPdf", hasPdf);
+    if (hasTranslation !== "all") params.set("hasTranslation", hasTranslation);
+    if (recentOnly) params.set("recent", "true");
     if (/^\d{4}$/u.test(yearFrom)) params.set("yearFrom", yearFrom);
     if (/^\d{4}$/u.test(yearTo)) params.set("yearTo", yearTo);
     return params;
-  }, [deferredQuery, hasPdf, sort, status, yearFrom, yearTo]);
+  }, [deferredQuery, hasPdf, hasTranslation, recentOnly, sort, status, yearFrom, yearTo]);
 
   const searchKey = search.toString();
   useEffect(() => setSelected(new Set()), [searchKey]);
@@ -272,9 +276,12 @@ export function LibraryPage() {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const year = formString(form, "publicationYear");
-    const identifier = formString(form, "identifier").trim();
+    const identifier = formString(form, "doi").trim();
+    const normalizedIdentifier = identifier
+      .replace(/^doi:\s*/iu, "")
+      .replace(/^https?:\/\/(?:dx\.)?doi\.org\//iu, "");
     const identifierType = /^10\.\d{4,9}\//u.test(
-      identifier.replace(/^https?:\/\/(?:dx\.)?doi\.org\//u, ""),
+      normalizedIdentifier,
     )
       ? "doi"
       : "arxiv";
@@ -382,6 +389,25 @@ export function LibraryPage() {
             </select>
           </label>
           <label>
+            翻訳版
+            <select
+              value={hasTranslation}
+              onChange={(event) => setHasTranslation(event.target.value as typeof hasTranslation)}
+            >
+              <option value="all">すべて</option>
+              <option value="true">あり</option>
+              <option value="false">なし</option>
+            </select>
+          </label>
+          <label className="checkbox-filter">
+            <input
+              type="checkbox"
+              checked={recentOnly}
+              onChange={(event) => setRecentOnly(event.target.checked)}
+            />
+            最近追加（30日以内）
+          </label>
+          <label>
             出版年
             <div className="range-inputs">
               <input
@@ -409,6 +435,8 @@ export function LibraryPage() {
             onClick={() => {
               setStatus("all");
               setHasPdf("all");
+              setHasTranslation("all");
+              setRecentOnly(false);
               setYearFrom("");
               setYearTo("");
             }}
@@ -599,8 +627,8 @@ export function LibraryPage() {
             DOI を入力すると、保存後に書誌情報を自動取得します。分かる項目だけでも登録できます。
           </p>
           <label className="form-field">
-            <span>タイトル *</span>
-            <input name="title" required autoFocus placeholder="論文タイトル" />
+            <span>タイトル（DOI入力時は自動取得）</span>
+            <input name="title" autoFocus placeholder="論文タイトル" />
           </label>
           <label className="form-field">
             <span>著者</span>
@@ -636,7 +664,7 @@ export function LibraryPage() {
           </label>
           <label className="form-field">
             <span>DOI / arXiv ID</span>
-            <input name="identifier" placeholder="10.1000/xyz または 2401.01234" />
+            <input name="doi" placeholder="10.1000/xyz または 2401.01234" />
           </label>
           <label className="form-field">
             <span>元ページ URL</span>

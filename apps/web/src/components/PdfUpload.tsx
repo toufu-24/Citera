@@ -15,12 +15,18 @@ function toHex(buffer: ArrayBuffer) {
 export function PdfUpload({ paperId, onComplete }: PdfUploadProps) {
   const input = useRef<HTMLInputElement>(null);
   const [progress, setProgress] = useState(0);
+  const [retryFile, setRetryFile] = useState<File | null>(null);
   const [state, setState] = useState<
     "idle" | "hashing" | "uploading" | "verifying" | "done" | "error"
   >("idle");
   const [error, setError] = useState<string | null>(null);
+  const [fileKind, setFileKind] = useState<"fulltext" | "translation" | "bilingual" | "supplement" | "other">("fulltext");
+  const [languageCode, setLanguageCode] = useState("");
+  const [label, setLabel] = useState("");
+  const [isDefault, setIsDefault] = useState(false);
 
   async function upload(file: File) {
+    setRetryFile(file);
     setError(null);
     if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
       setState("error");
@@ -41,10 +47,15 @@ export function PdfUpload({ paperId, onComplete }: PdfUploadProps) {
         mediaType: "application/pdf",
         sha256,
         originalName: file.name,
+        fileKind,
+        languageCode: languageCode || null,
+        label: label.trim() || null,
+        isDefault,
       });
       if (ticket.duplicate && ticket.uploadState === "verified") {
         setProgress(100);
         setState("done");
+        setRetryFile(null);
         onComplete();
         return;
       }
@@ -54,6 +65,7 @@ export function PdfUpload({ paperId, onComplete }: PdfUploadProps) {
         await api.completeUpload(ticket.fileId);
         setProgress(100);
         setState("done");
+        setRetryFile(null);
         onComplete();
         return;
       }
@@ -72,6 +84,7 @@ export function PdfUpload({ paperId, onComplete }: PdfUploadProps) {
       await api.completeUpload(ticket.fileId);
       setProgress(100);
       setState("done");
+      setRetryFile(null);
       onComplete();
     } catch {
       setState("error");
@@ -93,13 +106,37 @@ export function PdfUpload({ paperId, onComplete }: PdfUploadProps) {
         }}
       />
       {state === "idle" || state === "error" ? (
-        <button
-          type="button"
-          className="button secondary compact"
-          onClick={() => input.current?.click()}
-        >
-          <FileUp size={16} /> PDFを追加
-        </button>
+        <>
+          <div className="pdf-upload-options">
+            <select value={fileKind} onChange={(event) => setFileKind(event.target.value as typeof fileKind)} aria-label="PDFの種類">
+              <option value="fulltext">本文</option>
+              <option value="translation">翻訳版</option>
+              <option value="bilingual">対訳版</option>
+              <option value="supplement">補足資料</option>
+              <option value="other">その他</option>
+            </select>
+            <select value={languageCode} onChange={(event) => setLanguageCode(event.target.value)} aria-label="PDFの言語">
+              <option value="">言語未設定</option>
+              <option value="ja">日本語</option>
+              <option value="en">英語</option>
+              <option value="de">ドイツ語</option>
+              <option value="fr">フランス語</option>
+              <option value="zh-Hans">中国語（簡体）</option>
+              <option value="zh-Hant">中国語（繁体）</option>
+            </select>
+            <input value={label} onChange={(event) => setLabel(event.target.value)} placeholder="表示名（任意）" aria-label="PDFの表示名" />
+            <label>
+              <input type="checkbox" checked={isDefault} onChange={(event) => setIsDefault(event.target.checked)} /> 既定
+            </label>
+          </div>
+          <button
+            type="button"
+            className="button secondary compact"
+            onClick={() => input.current?.click()}
+          >
+            <FileUp size={16} /> PDFを追加
+          </button>
+        </>
       ) : (
         <div className="upload-progress">
           <span aria-live="polite">
@@ -128,10 +165,17 @@ export function PdfUpload({ paperId, onComplete }: PdfUploadProps) {
         </div>
       )}
       {error && (
-        <div className="inline-error" role="alert">
-          <X size={14} />
-          {error}
-        </div>
+        <>
+          <div className="inline-error" role="alert">
+            <X size={14} />
+            {error}
+          </div>
+          {retryFile && (
+            <button type="button" className="text-button" onClick={() => void upload(retryFile)}>
+              再試行
+            </button>
+          )}
+        </>
       )}
     </div>
   );

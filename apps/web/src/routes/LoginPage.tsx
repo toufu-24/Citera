@@ -1,16 +1,7 @@
 import { useMutation } from "@tanstack/react-query";
-import { ArrowRight, Check, Github, ShieldCheck, Sparkles } from "lucide-react";
+import { Check, ShieldCheck, Sparkles } from "lucide-react";
 
 import { api } from "../lib/api";
-
-const apiBase = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
-const configuredProviders: string = import.meta.env.VITE_AUTH_PROVIDERS ?? "google";
-const providers = new Set(
-  configuredProviders
-    .split(",")
-    .map((provider) => provider.trim().toLowerCase())
-    .filter(Boolean),
-);
 
 function safeReturnUrl(): string {
   const fallback = new URL("/library", window.location.origin);
@@ -75,25 +66,9 @@ export function LoginPage() {
           <h2>あなたのライブラリへ</h2>
           <p>信頼できるアカウントでログインしてください。</p>
           <div className="login-actions">
-            {providers.has("github") && (
-              <a
-                className="button oauth-button github"
-                href={`${apiBase}/v1/auth/login/github?returnTo=${encodeURIComponent(returnUrl)}`}
-              >
-                <Github size={19} /> GitHub で続ける <ArrowRight size={17} />
-              </a>
-            )}
-            {providers.has("google") && (
-              <a
-                className="button oauth-button google"
-                href={`${apiBase}/v1/auth/login/google?returnTo=${encodeURIComponent(returnUrl)}`}
-              >
-                <span className="google-g" aria-hidden="true">
-                  G
-                </span>{" "}
-                Google で続ける <ArrowRight size={17} />
-              </a>
-            )}
+            <a className="button oauth-button google" href="/cdn-cgi/access/login">
+              Cloudflare Accessでログイン
+            </a>
             {import.meta.env.DEV && import.meta.env.VITE_ENABLE_DEV_LOGIN !== "false" && (
               <button
                 className="text-button"

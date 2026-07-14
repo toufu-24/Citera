@@ -31,6 +31,11 @@ export interface PaperFile {
   sizeBytes: number;
   mediaType: string;
   kind: "original_pdf" | "supplement";
+  fileKind?: "fulltext" | "translation" | "bilingual" | "supplement" | "other";
+  label?: string | null;
+  languageCode?: string | null;
+  isDefault?: boolean;
+  sortOrder?: number;
   uploadState: "pending" | "uploaded" | "verified" | "failed";
   sha256?: string;
 }
@@ -43,6 +48,7 @@ export interface PaperListItem {
   publicationDate: string | null;
   venue: string | null;
   status: "inbox" | "reading" | "read" | "archived";
+  readingStatus?: "unread" | "reading" | "read" | "on_hold";
   rating: number | null;
   tags: PaperTag[];
   hasPdf: boolean;
@@ -62,6 +68,7 @@ export interface PaperDetail extends PaperListItem {
   collections: Array<{ id: string; name: string }>;
   notes: NoteRecord[];
   files: PaperFile[];
+  noteMarkdown?: string | null;
 }
 
 export type PaperMutationResult = Omit<PaperDetail, "notes"> & { notes?: NoteRecord[] };
@@ -136,6 +143,26 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
+}
+
+async function requestText(path: string, init: RequestInit = {}): Promise<string> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    ...init,
+    headers: { accept: "text/plain", ...(init.headers ?? {}) },
+    credentials: "include",
+  });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as {
+      error?: { code?: string; message?: string; details?: unknown };
+    } | null;
+    throw new ApiRequestError(
+      payload?.error?.message ?? `Request failed (${response.status})`,
+      response.status,
+      payload?.error?.code,
+      payload?.error?.details,
+    );
+  }
+  return response.text();
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -280,7 +307,17 @@ export const api = {
     }>(`/v1/files/${encodeURIComponent(fileId)}/download-url`),
   uploadUrl: async (
     paperId: string,
-    body: { sizeBytes: number; mediaType: string; sha256: string; originalName: string },
+    body: {
+      sizeBytes: number;
+      mediaType: string;
+      sha256: string;
+      originalName: string;
+      fileKind?: PaperFile["fileKind"];
+      label?: string | null;
+      languageCode?: string | null;
+      isDefault?: boolean;
+      sortOrder?: number;
+    },
   ) => {
     const ticket = await request<UploadTicketResponse>(
       `/v1/papers/${encodeURIComponent(paperId)}/files/upload-url`,
@@ -298,6 +335,27 @@ export const api = {
   },
   completeUpload: (fileId: string) =>
     request<PaperFile>(`/v1/files/${encodeURIComponent(fileId)}/complete`, { method: "POST" }),
+  retryUpload: (fileId: string) =>
+    request<{ file: PaperFile; upload: { url: string; headers: Record<string, string>; expiresIn: number } }>(
+      `/v1/files/${encodeURIComponent(fileId)}/retry`,
+      { method: "POST" },
+    ),
+  updateFile: (fileId: string, body: Record<string, unknown>) =>
+    request<PaperFile>(`/v1/files/${encodeURIComponent(fileId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  removeFile: (fileId: string) =>
+    request<void>(`/v1/files/${encodeURIComponent(fileId)}`, { method: "DELETE" }),
+  restoreFile: (fileId: string) =>
+    request<PaperFile>(`/v1/files/${encodeURIComponent(fileId)}/restore`, { method: "POST" }),
+  bibtex: (itemId: string) =>
+    requestText(`/v1/papers/${encodeURIComponent(itemId)}/bibtex`),
+  resolveDoi: (doi: string) =>
+    request<{ doi: string; metadata: Record<string, unknown> }>("/v1/metadata/resolve-doi", {
+      method: "POST",
+      body: JSON.stringify({ doi }),
+    }),
   refreshMetadata: (paperId: string) =>
     request<{ jobId: string; state: string }>(
       `/v1/papers/${encodeURIComponent(paperId)}/refresh-metadata`,

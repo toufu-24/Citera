@@ -16,7 +16,7 @@
     {
       "binding": "DB",
       "database_name": "citera-db",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "47d52c9b-6bc6-4410-82b2-e022764984f8",
       "migrations_dir": "../../migrations",
     },
   ],
@@ -59,7 +59,7 @@
         {
           "binding": "DB",
           "database_name": "citera-db",
-          "database_id": "00000000-0000-0000-0000-000000000000",
+          "database_id": "47d52c9b-6bc6-4410-82b2-e022764984f8",
           "migrations_dir": "../../migrations",
         },
       ],

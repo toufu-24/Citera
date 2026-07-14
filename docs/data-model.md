@@ -4,7 +4,7 @@
 
 - ID は type prefix 付き ULID-like value（例: `pap_...`, `usr_...`）。先頭 48 bit に millisecond timestamp を持ち、生成順が概ね時系列になる。
 - 日時は UTC ISO 8601 text。D1 の `strftime` に依存せず application boundary で統一する。
-- user-owned table と join table には `user_id` を持たせ、resource query は `user_id = ?` で scope することを API 規約にする。
+- user-owned table と join table には `user_id` と必要に応じて `library_id` を持たせ、resource query は認証済み利用者の `library_members` を確認して scope する。クライアントから送られたlibrary IDは権限の根拠にしない。
 - soft-delete 対象は `deleted_at` と change tombstone を残す。
 - Paper と note は row に integer `version` を持ち、更新/削除時に `If-Match` で比較する。Tag と collection は現在 row version を持たず、change-log version だけを導出する。
 - D1 には bearer token を保存せず、peppered SHA-256 hash だけを保存する。
@@ -20,6 +20,9 @@ erDiagram
   USERS ||--o{ SESSIONS : owns
   USERS ||--o{ AUTHORIZATION_CODES : authorizes
   USERS ||--o{ PAPERS : owns
+  USERS ||--o{ LIBRARY_MEMBERS : joins
+  LIBRARIES ||--o{ LIBRARY_MEMBERS : contains
+  LIBRARIES ||--o{ PAPERS : scopes
   USERS ||--o{ AUTHORS : owns
   USERS ||--o{ TAGS : owns
   USERS ||--o{ COLLECTIONS : owns
@@ -57,11 +60,12 @@ erDiagram
 | `sessions`                          | Web/extension session/access hash + lineage      | unique token/access hashes, family/parent/replacement links, user/family active indexes                          |
 | `authorization_codes`               | extension one-time auth code/PKCE                | primary `code_hash`, expires/used                                                                                |
 | `papers`                            | selected bibliography and workflow               | user+created/updated/year/status indexes, rating check, soft delete, version                                     |
+| `libraries` / `library_members`     | personal library and future shared-library boundary | personal owner membership is created on first login; member status/role checks                                  |
 | `paper_identifiers`                 | DOI/arXiv/etc                                    | unique(user, type, normalized), type check                                                                       |
 | `authors`                           | user-scoped author identity                      | unique(user, normalized_name, coalesced ORCID), name index                                                       |
 | `paper_authors`                     | ordered authorship                               | PK(paper,author,role), unique paper+role+position, user+paper index                                              |
 | `metadata_values`                   | provenance/confidence candidates                 | user+paper+field index, confidence check                                                                         |
-| `files`                             | R2 metadata and verification state               | user+paper, user+sha+kind duplicate index, generated `r2_key`                                                    |
+| `files`                             | R2 metadata and verification state               | user+paper, same-paper SHA-256 duplicate check, file kind/language/label/default/order, soft delete              |
 | `tags` / `paper_tags`               | normalized labels                                | unique(user, normalized_name), PK(paper,tag), user+tag+paper index                                               |
 | `collections` / `collection_papers` | nested folders                                   | unique sibling name（soft-delete row も占有）、scoped joins                                                      |
 | `notes`                             | Markdown/page/highlight/todo                     | user+paper+updated, page check, version/soft delete                                                              |
@@ -78,8 +82,11 @@ erDiagram
 ## 選択値
 
 - `papers.status`: `inbox | reading | read | archived`
+- `papers.reading_status`: `unread | reading | read | on_hold`
 - `papers.metadata_state`: `pending | complete | needs_review | failed`
 - `files.kind`: `original_pdf | supplement | thumbnail | extracted_text | export`
+- `files.file_kind`: `fulltext | translation | bilingual | supplement | other`
+- `files.language_code`: optional MVP language code (`ja`, `en`, `de`, `fr`, `zh-Hans`, `zh-Hant`); bilingual files may be null
 - `files.upload_state`: `pending | uploaded | verified | failed`
 - `notes.note_type`: `general | page | highlight | summary | todo`
 - `changes.operation`: `create | update | delete | restore`（sync pull では `restore` を `update` として返す）
@@ -92,12 +99,12 @@ erDiagram
 
 ## File deduplication
 
-同じ SHA-256 は強い duplicate candidate なので hard unique constraint にはせず、`(user_id, sha256, kind)` index で検出します。Current upload route は同一 user 内の別 paper に同じ SHA/kind があると `409 DUPLICATE_FILE` を返し、blob 共有はしません。将来 immutable `blobs` + `paper_files` へ分離すれば複数 paper/version から共有できます。
+同じ論文内の同じ SHA-256 は duplicate として扱います。利用者間・別論文間のファイル比較結果は返しません。将来 immutable `blobs` + `paper_files` へ分離すれば複数 paper/version から共有できます。
 
 ## Delete policy
 
 - Paper/collection/note/file は soft delete と change tombstone を使います。Tag delete は現在 hard delete です。
-- File delete は `object.cleanup` job を直ちに enqueue し、job が D1 row の user/key prefix を再確認して R2 object を削除します。Grace period はありません。Hourly cleanup は設定 TTL を超えた pending/uploaded/failed file row を tombstone にして残存 object を削除します。
+- File delete は `deleted_at` のみを設定し、ゴミ箱から復元できます。物理削除はMVP後のCronで実行できるようにします。Paper delete もPDF本体を即時削除しません。
 - Paper soft delete は関連 PDF を自動削除しません。Expired export object は hourly cleanup が削除します。
 - Account deletion request は `users.deletion_requested_at` と `deletion_generation=1`、全 session family/session の失効、durable outbox row を同じ batch に保存します。この tombstone は auth と新しい非 deletion job を拒否する fence です。Deletion consumer は最低 20 分と既存 running job の終了を待ち、owner R2 prefix を pagination 付きで最終 sweep してから D1 user を cascade delete します。Hourly recovery は terminal/stale generation を進めて新しい outbox job を作るため、古い generation の redelivery は no-op に収束します。Backup restore は未実装です。
 

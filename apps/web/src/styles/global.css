@@ -1184,6 +1184,64 @@
   .pdf-upload {
     position: relative;
   }
+  .pdf-upload-options {
+    position: absolute;
+    top: 38px;
+    right: 0;
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 7px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: var(--surface);
+    box-shadow: 0 8px 24px rgb(23 33 27 / 0.12);
+  }
+  .pdf-upload-options select,
+  .pdf-upload-options input[type="text"],
+  .pdf-upload-options input:not([type]) {
+    max-width: 120px;
+    min-height: 28px;
+    padding: 0 6px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--surface);
+    font-size: 10px;
+  }
+  .pdf-upload-options label {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 10px;
+    white-space: nowrap;
+  }
+  .pdf-file-tabs {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-height: 40px;
+    overflow-x: auto;
+    padding: 5px 12px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface);
+  }
+  .pdf-file-tabs button {
+    flex: 0 0 auto;
+    padding: 6px 9px;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .pdf-file-tabs button.active {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--forest-2);
+    font-weight: 700;
+  }
   .upload-progress {
     width: 160px;
     display: grid;

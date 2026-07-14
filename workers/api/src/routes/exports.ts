@@ -1,5 +1,5 @@
 import { exportPapers, type ExportPaper } from "@citera/export";
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { all, first, PAPER_AGGREGATES_SQL, paperFromRow, type SqlRow } from "../db";
 import { ApiError } from "../errors";
@@ -80,6 +80,7 @@ function toExportPaper(row: SqlRow): ExportPaper {
     language: paper.language as string | null,
     paperType: paper.paperType as string,
     status: paper.status as string,
+    readingStatus: paper.readingStatus as string,
     rating: paper.rating as number | null,
     doi:
       identifiers.find((identifier) => identifier.identifierType === "doi")?.normalizedValue ??
@@ -89,6 +90,7 @@ function toExportPaper(row: SqlRow): ExportPaper {
       null,
     sourceUrl: paper.sourceUrl as string | null,
     abstract: paper.abstract as string | null,
+    noteMarkdown: paper.noteMarkdown as string | null,
     tags: (paper.tags as Array<{ name: string }>).map((tag) => tag.name),
     createdAt: String(paper.createdAt),
     updatedAt: String(paper.updatedAt),
@@ -97,8 +99,12 @@ function toExportPaper(row: SqlRow): ExportPaper {
 
 export const exportsRoutes = new Hono<AppBindings>();
 
-exportsRoutes.post("/", async (c) => {
-  const input = createExportSchema.parse(await c.req.json());
+async function createExport(c: Context<AppBindings>, forcedFormat?: z.infer<typeof createExportSchema>["format"]): Promise<Response> {
+  const rawInput: unknown = await c.req.json();
+  const body = rawInput && typeof rawInput === "object" && !Array.isArray(rawInput)
+    ? (rawInput as Record<string, unknown>)
+    : {};
+  const input = createExportSchema.parse(forcedFormat ? { ...body, format: forcedFormat } : body);
   if (!input.all && (!input.paperIds || input.paperIds.length === 0)) {
     throw new ApiError(422, "EXPORT_SELECTION_REQUIRED", "Select paperIds or set all to true.");
   }
@@ -225,7 +231,12 @@ exportsRoutes.post("/", async (c) => {
     },
     201,
   );
-});
+}
+
+exportsRoutes.post("/", (c) => createExport(c));
+for (const format of ["bibtex", "ris", "csv"] as const) {
+  exportsRoutes.post(`/${format}`, (c) => createExport(c, format));
+}
 
 exportsRoutes.get("/:exportId", async (c) => {
   const row = await requireExport(c.env.DB, c.get("user").id, c.req.param("exportId"));

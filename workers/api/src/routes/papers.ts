@@ -11,6 +11,7 @@ import {
   normalizeUrl,
   parseArxivId,
 } from "@citera/domain";
+import { exportBibTeX, type ExportPaper } from "@citera/export";
 import { Hono } from "hono";
 import { z } from "zod";
 import {
@@ -24,6 +25,7 @@ import {
 import { ApiError } from "../errors";
 import { dispatchOutboxJobs, jobOutboxStatement } from "../jobs";
 import { readUserPreferences } from "../preferences";
+import { resolveDoiMetadata } from "./metadata";
 import type { AppBindings, JobMessage } from "../types";
 import { createId, decodeCursor, encodeCursor, nowUtcIso, parseJson } from "../utils";
 
@@ -38,6 +40,17 @@ const authorInputSchema = AuthorSchema.pick({
   familyName: true,
   orcid: true,
 });
+
+const readingStatusSchema = z.enum(["unread", "reading", "read", "on_hold"]);
+type ReadingStatus = z.infer<typeof readingStatusSchema>;
+
+function readingStatusFromLegacy(status: z.infer<typeof PaperStatusSchema>): ReadingStatus {
+  return status === "reading" ? "reading" : status === "read" ? "read" : status === "archived" ? "on_hold" : "unread";
+}
+
+function legacyStatusFromReading(status: ReadingStatus): z.infer<typeof PaperStatusSchema> {
+  return status === "reading" ? "reading" : status === "read" ? "read" : status === "on_hold" ? "archived" : "inbox";
+}
 
 const nullableText = (maximum: number) => z.string().trim().max(maximum).nullable().optional();
 
@@ -54,11 +67,13 @@ const paperFieldsSchema = z.object({
   language: nullableText(35),
   paperType: PaperTypeSchema.default("article-journal"),
   status: PaperStatusSchema.default("inbox"),
+  readingStatus: readingStatusSchema.optional(),
   priority: z.number().int().min(0).max(5).default(0),
   rating: z.number().int().min(1).max(5).nullable().optional(),
   readProgress: z.number().min(0).max(100).default(0),
   sourceUrl: HttpUrlSchema.nullable().optional(),
   metadataState: MetadataStateSchema.default("pending"),
+  noteMarkdown: z.string().max(1_000_000).nullable().optional(),
 });
 
 const createPaperSchema = paperFieldsSchema.extend({
@@ -84,15 +99,18 @@ const listPapersSchema = z.object({
   author: z.string().max(500).optional(),
   venue: z.string().max(2_000).optional(),
   status: PaperStatusSchema.optional(),
+  readingStatus: readingStatusSchema.optional(),
   paperType: PaperTypeSchema.optional(),
   yearFrom: z.coerce.number().int().min(1000).max(9999).optional(),
   yearTo: z.coerce.number().int().min(1000).max(9999).optional(),
   rating: z.coerce.number().int().min(1).max(5).optional(),
   hasPdf: z.enum(["true", "false"]).optional(),
+  hasTranslation: z.enum(["true", "false"]).optional(),
   hasNotes: z.enum(["true", "false"]).optional(),
   createdFrom: z.string().datetime({ offset: true }).optional(),
   createdTo: z.string().datetime({ offset: true }).optional(),
   deleted: z.enum(["exclude", "only", "include"]).default("exclude"),
+  recent: z.enum(["true", "false"]).optional(),
   sort: z.string().max(100).default("updated_at:desc"),
   cursor: z.string().max(2_000).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
@@ -294,6 +312,7 @@ const fieldColumns: Record<string, string> = {
   readProgress: "read_progress",
   sourceUrl: "source_url",
   metadataState: "metadata_state",
+  noteMarkdown: "note_markdown",
 };
 
 const sortFields: Record<string, { expression: string; key: string }> = {
@@ -312,6 +331,33 @@ const sortFields: Record<string, { expression: string; key: string }> = {
 };
 
 export const papersRoutes = new Hono<AppBindings>();
+
+papersRoutes.get("/:paperId/bibtex", async (c) => {
+  const paper = paperFromRow(await requirePaper(c.env.DB, c.get("user").id, c.req.param("paperId")));
+  const identifiers = paper.identifiers as Array<{ identifierType?: string; normalizedValue?: string }>;
+  const authors = paper.authors as Array<{ displayName: string; orcid?: string | null }>;
+  const exportPaper: ExportPaper = {
+    id: String(paper.id),
+    title: String(paper.title),
+    authors: authors.map((author) => ({ displayName: author.displayName, orcid: author.orcid ?? null })),
+    publicationYear: paper.publicationYear as number | null,
+    publicationDate: paper.publicationDate as string | null,
+    venue: paper.venue as string | null,
+    volume: paper.volume as string | null,
+    issue: paper.issue as string | null,
+    pages: paper.pages as string | null,
+    publisher: paper.publisher as string | null,
+    paperType: paper.paperType as string,
+    doi: identifiers.find((identifier) => identifier.identifierType === "doi")?.normalizedValue ?? null,
+    sourceUrl: paper.sourceUrl as string | null,
+    abstract: paper.abstract as string | null,
+    tags: (paper.tags as Array<{ name: string }>).map((tag) => tag.name),
+  };
+  return c.text(exportBibTeX([exportPaper]), 200, {
+    "Content-Type": "application/x-bibtex; charset=utf-8",
+    "Content-Disposition": `inline; filename="citera-${String(paper.id)}.bib"`,
+  });
+});
 
 function paperMaintenanceJobs(input: {
   userId: string;
@@ -348,6 +394,10 @@ papersRoutes.get("/", async (c) => {
   if (input.status) {
     where.push("p.status = ?");
     bindings.push(input.status);
+  }
+  if (input.readingStatus) {
+    where.push("p.reading_status = ?");
+    bindings.push(input.readingStatus);
   }
   if (input.paperType) {
     where.push("p.paper_type = ?");
@@ -394,7 +444,12 @@ papersRoutes.get("/", async (c) => {
   }
   if (input.hasPdf !== undefined) {
     where.push(
-      `${input.hasPdf === "true" ? "" : "NOT "}EXISTS(SELECT 1 FROM files f WHERE f.user_id=p.user_id AND f.paper_id=p.id AND f.kind='original_pdf' AND f.upload_state='verified' AND f.deleted_at IS NULL)`,
+      `${input.hasPdf === "true" ? "" : "NOT "}EXISTS(SELECT 1 FROM files f WHERE f.user_id=p.user_id AND f.paper_id=p.id AND f.upload_state='verified' AND f.deleted_at IS NULL)`,
+    );
+  }
+  if (input.hasTranslation !== undefined) {
+    where.push(
+      `${input.hasTranslation === "true" ? "" : "NOT "}EXISTS(SELECT 1 FROM files f WHERE f.user_id=p.user_id AND f.paper_id=p.id AND f.file_kind='translation' AND f.upload_state='verified' AND f.deleted_at IS NULL)`,
     );
   }
   if (input.hasNotes !== undefined) {
@@ -410,6 +465,9 @@ papersRoutes.get("/", async (c) => {
     where.push("p.created_at <= ?");
     bindings.push(input.createdTo);
   }
+  if (input.recent === "true") {
+    where.push("p.created_at >= datetime('now', '-30 days')");
+  }
   if (input.q) {
     const query = `%${normalizeComparableText(input.q)}%`;
     where.push(`(
@@ -419,8 +477,9 @@ papersRoutes.get("/", async (c) => {
       OR EXISTS(SELECT 1 FROM paper_authors pa JOIN authors a ON a.id=pa.author_id AND a.user_id=pa.user_id WHERE pa.user_id=p.user_id AND pa.paper_id=p.id AND a.normalized_name LIKE ?)
       OR EXISTS(SELECT 1 FROM paper_tags pt JOIN tags t ON t.id=pt.tag_id AND t.user_id=pt.user_id WHERE pt.user_id=p.user_id AND pt.paper_id=p.id AND t.normalized_name LIKE ?)
       OR EXISTS(SELECT 1 FROM notes n WHERE n.user_id=p.user_id AND n.paper_id=p.id AND n.deleted_at IS NULL AND lower(n.content_markdown) LIKE ?)
+      OR lower(COALESCE(p.note_markdown,'')) LIKE ?
     )`);
-    bindings.push(query, query, query, query, query, query, query, query);
+    bindings.push(query, query, query, query, query, query, query, query, query);
   }
   if (input.cursor) {
     const cursor = decodeCursor<{
@@ -464,17 +523,59 @@ papersRoutes.get("/", async (c) => {
 papersRoutes.post("/", async (c) => {
   const rawInput: unknown = await c.req.json();
   const userId = c.get("user").id;
-  const parsedInput = createPaperSchema.parse(rawInput);
+  const rawRecord = rawInput && typeof rawInput === "object" && !Array.isArray(rawInput)
+    ? (rawInput as Record<string, unknown>)
+    : {};
+  const rawIdentifiers: unknown[] = Array.isArray(rawRecord.identifiers) ? rawRecord.identifiers : [];
+  const identifierDoi = rawIdentifiers.find(
+    (identifier) => identifier && typeof identifier === "object" && (identifier as Record<string, unknown>).identifierType === "doi",
+  );
+  let suppliedDoi: string | null = null;
+  if (typeof rawRecord.doi === "string") suppliedDoi = rawRecord.doi;
+  else if (identifierDoi && typeof identifierDoi === "object") {
+    const candidate = (identifierDoi as Record<string, unknown>).value;
+    if (typeof candidate === "string") suppliedDoi = candidate;
+  }
+  let normalizedRaw = rawRecord;
+  if (typeof rawRecord.title !== "string" || !rawRecord.title.trim()) {
+    if (!suppliedDoi) throw new ApiError(422, "TITLE_REQUIRED", "A title or DOI is required.");
+    const metadata = await resolveDoiMetadata(c.env, suppliedDoi);
+    normalizedRaw = {
+      ...rawRecord,
+      title: metadata.title,
+      identifiers: rawIdentifiers.length ? rawIdentifiers : [{ identifierType: "doi", value: metadata.doi }],
+      authors: rawRecord.authors ?? metadata.authors,
+      publicationDate: rawRecord.publicationDate ?? metadata.publicationDate,
+      publicationYear: rawRecord.publicationYear ?? metadata.publicationYear,
+      venue: rawRecord.venue ?? metadata.venue,
+      volume: rawRecord.volume ?? metadata.volume,
+      issue: rawRecord.issue ?? metadata.issue,
+      pages: rawRecord.pages ?? metadata.pages,
+      publisher: rawRecord.publisher ?? metadata.publisher,
+      language: rawRecord.language ?? metadata.language,
+      paperType: rawRecord.paperType ?? metadata.paperType,
+      sourceUrl: rawRecord.sourceUrl ?? metadata.url,
+    };
+  }
+  const parsedInput = createPaperSchema.parse(normalizedRaw);
   const suppliedFields =
-    rawInput && typeof rawInput === "object" && !Array.isArray(rawInput)
-      ? (rawInput as Record<string, unknown>)
+    normalizedRaw && typeof normalizedRaw === "object" && !Array.isArray(normalizedRaw)
+      ? normalizedRaw
       : {};
   const preferences = await readUserPreferences(c.env.DB, userId);
+  const requestedReadingStatus = parsedInput.readingStatus;
   const input = {
     ...parsedInput,
     status: Object.hasOwn(suppliedFields, "status")
       ? parsedInput.status
-      : preferences.defaultStatus,
+      : requestedReadingStatus
+        ? legacyStatusFromReading(requestedReadingStatus)
+        : preferences.defaultStatus,
+    readingStatus: Object.hasOwn(suppliedFields, "readingStatus")
+      ? requestedReadingStatus ?? readingStatusFromLegacy(parsedInput.status)
+      : readingStatusFromLegacy(
+          Object.hasOwn(suppliedFields, "status") ? parsedInput.status : preferences.defaultStatus,
+        ),
     tagIds: Object.hasOwn(suppliedFields, "tagIds")
       ? parsedInput.tagIds
       : preferences.defaultTagIds,
@@ -523,13 +624,14 @@ papersRoutes.post("/", async (c) => {
   const statements: D1PreparedStatement[] = [
     c.env.DB.prepare(
       `INSERT INTO papers (
-        id,user_id,title,abstract,publication_year,publication_date,venue,volume,issue,pages,publisher,
-        language,paper_type,status,priority,rating,read_progress,source_url,metadata_state,search_text,
-        version,last_opened_at,created_at,updated_at,deleted_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,NULL,?,?,NULL)`,
+        id,user_id,library_id,title,abstract,publication_year,publication_date,venue,volume,issue,pages,publisher,
+        language,paper_type,status,reading_status,priority,rating,read_progress,source_url,metadata_state,search_text,
+        note_markdown,version,last_opened_at,created_at,updated_at,deleted_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,NULL,?,?,NULL)`,
     ).bind(
       id,
       userId,
+      c.get("libraryId"),
       input.title,
       input.abstract ?? null,
       input.publicationYear ?? null,
@@ -542,12 +644,14 @@ papersRoutes.post("/", async (c) => {
       input.language ?? null,
       input.paperType,
       input.status,
+      input.readingStatus,
       input.priority,
       input.rating ?? null,
       input.readProgress,
       input.sourceUrl ?? null,
       input.metadataState,
       searchText,
+      input.noteMarkdown ?? null,
       now,
       now,
     ),
@@ -600,8 +704,8 @@ papersRoutes.post("/", async (c) => {
   for (const tagId of new Set(input.tagIds)) {
     statements.push(
       c.env.DB.prepare(
-        "INSERT INTO paper_tags (user_id,paper_id,tag_id,created_at) VALUES (?,?,?,?)",
-      ).bind(userId, id, tagId, now),
+        "INSERT INTO paper_tags (user_id,paper_id,tag_id,library_id,created_at) VALUES (?,?,?,?,?)",
+      ).bind(userId, id, tagId, c.get("libraryId"), now),
     );
   }
   for (const collectionId of new Set(input.collectionIds)) {
@@ -689,13 +793,25 @@ papersRoutes.patch("/:paperId", async (c) => {
   const now = nowUtcIso();
   const assignments: string[] = [];
   const values: unknown[] = [];
+  if ("readingStatus" in input || "status" in input) {
+    const nextReadingStatus = input.readingStatus ?? readingStatusFromLegacy(input.status ?? "inbox");
+    const nextLegacyStatus = input.status ?? legacyStatusFromReading(nextReadingStatus);
+    assignments.push("status = ?", "reading_status = ?");
+    values.push(nextLegacyStatus, nextReadingStatus);
+  }
   for (const [field, column] of Object.entries(fieldColumns)) {
-    if (field in input) {
+    if (field in input && field !== "status") {
       assignments.push(`${column} = ?`);
       values.push(input[field as keyof typeof input] ?? null);
     }
   }
-  if ("title" in input || "abstract" in input || "venue" in input || "authors" in input) {
+  if (
+    "title" in input ||
+    "abstract" in input ||
+    "venue" in input ||
+    "authors" in input ||
+    "noteMarkdown" in input
+  ) {
     const existingAuthors = (paperFromRow(existing).authors as Array<{ displayName?: string }>).map(
       (author) => author.displayName ?? "",
     );
@@ -706,6 +822,7 @@ papersRoutes.patch("/:paperId", async (c) => {
           input.title ?? existing.title,
           input.abstract ?? existing.abstract,
           input.venue ?? existing.venue,
+          input.noteMarkdown ?? existing.note_markdown,
           ...(input.authors?.map((author) => author.displayName) ?? existingAuthors),
         ]
           .filter(Boolean)
@@ -766,7 +883,7 @@ papersRoutes.patch("/:paperId", async (c) => {
     statements.push(...(await authorStatements(c.env.DB, userId, paperId, input.authors, now)));
   }
   for (const [field, value] of Object.entries(input)) {
-    if (fieldColumns[field] && field !== "metadataState") {
+    if (fieldColumns[field] && field !== "metadataState" && field !== "noteMarkdown") {
       statements.push(
         c.env.DB.prepare(
           `INSERT INTO metadata_values
@@ -775,6 +892,15 @@ papersRoutes.patch("/:paperId", async (c) => {
         ).bind(createId("mdv"), userId, paperId, field, JSON.stringify(value), now, now),
       );
     }
+  }
+  if ("noteMarkdown" in input) {
+    statements.push(
+      c.env.DB.prepare(
+        `INSERT INTO metadata_values
+          (id,user_id,paper_id,field_name,value_json,source_type,source_reference,confidence,selected,created_at,updated_at)
+         VALUES (?,?,?,?,?,'user',NULL,1,1,?,?)`,
+      ).bind(createId("mdv"), userId, paperId, "noteMarkdown", JSON.stringify(input.noteMarkdown), now, now),
+    );
   }
   const updatedSnapshot = {
     ...paperFromRow(existing),

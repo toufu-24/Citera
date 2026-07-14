@@ -57,8 +57,35 @@ export function changeStatement(
 }
 
 export function paperFromRow(row: SqlRow): Record<string, unknown> {
+  const files = parseJson(row.files_json, []).map((file) => {
+    if (!file || typeof file !== "object" || Array.isArray(file)) return file;
+    const record = file as Record<string, unknown>;
+    if (typeof record.label === "string" && record.label.trim()) return record;
+    const kindLabels: Record<string, string> = {
+      fulltext: "本文",
+      translation: "翻訳版",
+      bilingual: "対訳版",
+      supplement: "補足資料",
+      other: "その他",
+    };
+    const languageLabels: Record<string, string> = {
+      ja: "日本語",
+      en: "英語",
+      de: "ドイツ語",
+      fr: "フランス語",
+      "zh-Hans": "中国語（簡体）",
+      "zh-Hant": "中国語（繁体）",
+    };
+    const fileKind = typeof record.fileKind === "string" ? record.fileKind : "fulltext";
+    const languageCode = typeof record.languageCode === "string" ? record.languageCode : null;
+    return {
+      ...record,
+      label: `${kindLabels[fileKind] ?? "PDF"}${languageCode ? `（${languageLabels[languageCode] ?? languageCode}）` : ""}`,
+    };
+  });
   return {
     id: row.id,
+    libraryId: row.library_id ?? null,
     title: row.title,
     abstract: row.abstract ?? null,
     publicationYear: row.publication_year ?? null,
@@ -71,10 +98,20 @@ export function paperFromRow(row: SqlRow): Record<string, unknown> {
     language: row.language ?? null,
     paperType: row.paper_type,
     status: row.status,
+    readingStatus:
+      row.reading_status ??
+      (row.status === "reading"
+        ? "reading"
+        : row.status === "read"
+          ? "read"
+          : row.status === "archived"
+            ? "on_hold"
+            : "unread"),
     priority: row.priority,
     rating: row.rating ?? null,
     readProgress: row.read_progress,
     sourceUrl: row.source_url ?? null,
+    noteMarkdown: row.note_markdown ?? null,
     metadataState: row.metadata_state,
     version: row.version,
     lastOpenedAt: row.last_opened_at ?? null,
@@ -85,7 +122,7 @@ export function paperFromRow(row: SqlRow): Record<string, unknown> {
     identifiers: parseJson(row.identifiers_json, []),
     tags: parseJson(row.tags_json, []),
     collections: parseJson(row.collections_json, []),
-    files: parseJson(row.files_json, []),
+    files,
     hasPdf: Boolean(row.has_pdf),
     hasNotes: Boolean(row.has_notes),
   };
@@ -131,11 +168,13 @@ export const PAPER_AGGREGATES_SQL = `
   ), '[]') AS collections_json,
   COALESCE((
     SELECT json_group_array(json_object(
-      'id', f.id, 'kind', f.kind, 'mediaType', f.media_type, 'sizeBytes', f.size_bytes,
+      'id', f.id, 'kind', f.kind, 'fileKind', COALESCE(f.file_kind, 'fulltext'),
+      'label', f.label, 'languageCode', f.language_code, 'isDefault', f.is_default,
+      'sortOrder', f.sort_order, 'mediaType', f.media_type, 'sizeBytes', f.size_bytes,
       'originalName', f.original_name, 'uploadState', f.upload_state, 'sha256', f.sha256
     ))
     FROM files f
     WHERE f.user_id = p.user_id AND f.paper_id = p.id AND f.deleted_at IS NULL
   ), '[]') AS files_json,
-  EXISTS(SELECT 1 FROM files f WHERE f.user_id = p.user_id AND f.paper_id = p.id AND f.kind = 'original_pdf' AND f.upload_state = 'verified' AND f.deleted_at IS NULL) AS has_pdf,
+  EXISTS(SELECT 1 FROM files f WHERE f.user_id = p.user_id AND f.paper_id = p.id AND f.upload_state = 'verified' AND f.deleted_at IS NULL) AS has_pdf,
   EXISTS(SELECT 1 FROM notes n WHERE n.user_id = p.user_id AND n.paper_id = p.id AND n.deleted_at IS NULL) AS has_notes`;

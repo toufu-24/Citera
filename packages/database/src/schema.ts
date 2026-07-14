@@ -23,13 +23,50 @@ export const users = sqliteTable(
     email: text("email").notNull(),
     displayName: text("display_name").notNull(),
     avatarUrl: text("avatar_url"),
+    accessIssuer: text("access_issuer"),
+    accessSubject: text("access_subject"),
+    status: text("status").notNull().default("active"),
     deletionRequestedAt: text("deletion_requested_at"),
     deletionGeneration: integer("deletion_generation").notNull().default(0),
     ...timestamps,
   },
   (table) => [
     uniqueIndex("users_email_uq").on(table.email),
+    uniqueIndex("users_access_identity_uq")
+      .on(table.accessIssuer, table.accessSubject)
+      .where(sql`${table.accessIssuer} is not null and ${table.accessSubject} is not null`),
+    index("users_status_idx").on(table.status),
     check("users_deletion_generation_ck", sql`${table.deletionGeneration} >= 0`),
+  ],
+);
+
+export const libraries = sqliteTable(
+  "libraries",
+  {
+    id: text("id").primaryKey(),
+    kind: text("kind").notNull().default("personal"),
+    name: text("name").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [check("libraries_kind_ck", sql`${table.kind} in ('personal','shared')`)],
+);
+
+export const libraryMembers = sqliteTable(
+  "library_members",
+  {
+    libraryId: text("library_id")
+      .notNull()
+      .references(() => libraries.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    role: text("role").notNull().default("owner"),
+    status: text("status").notNull().default("active"),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.libraryId, table.userId] }),
+    index("library_members_user_idx").on(table.userId, table.status),
   ],
 );
 
@@ -40,6 +77,7 @@ export const oauthAccounts = sqliteTable(
     userId: text("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
+    libraryId: text("library_id").references(() => libraries.id, { onDelete: "set null" }),
     provider: text("provider").notNull(),
     providerAccountId: text("provider_account_id").notNull(),
     ...timestamps,
@@ -132,6 +170,7 @@ export const papers = sqliteTable(
     userId: text("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
+    libraryId: text("library_id").references(() => libraries.id, { onDelete: "set null" }),
     title: text("title").notNull(),
     abstract: text("abstract"),
     publicationYear: integer("publication_year"),
@@ -144,10 +183,12 @@ export const papers = sqliteTable(
     language: text("language"),
     paperType: text("paper_type").notNull().default("article-journal"),
     status: text("status").notNull().default("inbox"),
+    readingStatus: text("reading_status").notNull().default("unread"),
     priority: integer("priority").notNull().default(0),
     rating: integer("rating"),
     readProgress: real("read_progress").notNull().default(0),
     sourceUrl: text("source_url"),
+    noteMarkdown: text("note_markdown"),
     metadataState: text("metadata_state").notNull().default("pending"),
     searchText: text("search_text").notNull().default(""),
     version: integer("version").notNull().default(1),
@@ -158,6 +199,7 @@ export const papers = sqliteTable(
   },
   (table) => [
     check("papers_status_ck", sql`${table.status} in ('inbox','reading','read','archived')`),
+    check("papers_reading_status_ck", sql`${table.readingStatus} in ('unread','reading','read','on_hold')`),
     check(
       "papers_metadata_state_ck",
       sql`${table.metadataState} in ('pending','complete','needs_review','failed')`,
@@ -171,6 +213,8 @@ export const papers = sqliteTable(
     index("papers_user_updated_idx").on(table.userId, table.updatedAt),
     index("papers_user_publication_year_idx").on(table.userId, table.publicationYear),
     index("papers_user_status_updated_idx").on(table.userId, table.status, table.updatedAt),
+    index("papers_library_created_idx").on(table.libraryId, table.createdAt),
+    index("papers_library_status_idx").on(table.libraryId, table.readingStatus, table.updatedAt),
   ],
 );
 
@@ -284,6 +328,11 @@ export const files = sqliteTable(
     sizeBytes: integer("size_bytes").notNull(),
     originalName: text("original_name").notNull(),
     kind: text("kind").notNull(),
+    label: text("label"),
+    fileKind: text("file_kind").notNull().default("fulltext"),
+    languageCode: text("language_code"),
+    isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
+    sortOrder: integer("sort_order").notNull().default(0),
     uploadState: text("upload_state").notNull().default("pending"),
     createdAt: text("created_at").notNull(),
     deletedAt: text("deleted_at"),
@@ -292,6 +341,10 @@ export const files = sqliteTable(
     uniqueIndex("files_r2_key_uq").on(table.r2Key),
     index("files_user_sha_kind_idx").on(table.userId, table.sha256, table.kind),
     index("files_user_paper_idx").on(table.userId, table.paperId, table.deletedAt),
+    index("files_paper_kind_order_idx").on(table.paperId, table.fileKind, table.sortOrder, table.createdAt),
+    uniqueIndex("files_one_default_per_paper_uq")
+      .on(table.paperId)
+      .where(sql`${table.isDefault} = 1 and ${table.deletedAt} is null`),
     check(
       "files_kind_ck",
       sql`${table.kind} in ('original_pdf','supplement','thumbnail','extracted_text','export')`,
@@ -310,6 +363,7 @@ export const tags = sqliteTable(
     userId: text("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
+    libraryId: text("library_id").references(() => libraries.id, { onDelete: "set null" }),
     name: text("name").notNull(),
     normalizedName: text("normalized_name").notNull(),
     color: text("color"),
@@ -318,6 +372,7 @@ export const tags = sqliteTable(
   (table) => [
     uniqueIndex("tags_user_normalized_name_uq").on(table.userId, table.normalizedName),
     index("tags_user_name_idx").on(table.userId, table.name),
+    index("tags_library_name_idx").on(table.libraryId, table.normalizedName),
   ],
 );
 
@@ -333,11 +388,13 @@ export const paperTags = sqliteTable(
     tagId: text("tag_id")
       .notNull()
       .references(() => tags.id, { onDelete: "cascade" }),
+    libraryId: text("library_id").references(() => libraries.id, { onDelete: "set null" }),
     createdAt: text("created_at").notNull(),
   },
   (table) => [
     primaryKey({ columns: [table.paperId, table.tagId] }),
     index("paper_tags_user_tag_paper_idx").on(table.userId, table.tagId, table.paperId),
+    index("paper_tags_library_tag_paper_idx").on(table.libraryId, table.tagId, table.paperId),
   ],
 );
 
@@ -418,6 +475,7 @@ export const notes = sqliteTable(
     paperId: text("paper_id")
       .notNull()
       .references(() => papers.id, { onDelete: "cascade" }),
+    libraryId: text("library_id").references(() => libraries.id, { onDelete: "set null" }),
     parentNoteId: text("parent_note_id"),
     noteType: text("note_type").notNull(),
     pageNumber: integer("page_number"),
@@ -438,6 +496,7 @@ export const notes = sqliteTable(
       sql`(${table.noteType} not in ('page','highlight')) or (${table.pageNumber} is not null and ${table.pageNumber} > 0)`,
     ),
     index("notes_user_paper_updated_idx").on(table.userId, table.paperId, table.updatedAt),
+    index("notes_library_paper_idx").on(table.libraryId, table.paperId, table.updatedAt),
     uniqueIndex("notes_id_user_paper_uq").on(table.id, table.userId, table.paperId),
     foreignKey({
       columns: [table.parentNoteId],

@@ -2,7 +2,7 @@
 
 ## 方針
 
-Citera は Cloudflare 以外の常時稼働 server を持たない、single-owner / multi-device システムです。D1 を同期の正本、R2 を非公開 blob store、IndexedDB を端末キャッシュとして扱います。API・ジョブ・クライアントは `packages/domain` の core type/normalizer と、用途に応じた Zod schema を共有しますが、全 request/response が1つの runtime schema を通るわけではありません。
+Citera は Cloudflare 以外の常時稼働 server を持たない、multi-user / personal-library システムです。D1 をメタデータ・権限・同期の正本、R2 を非公開 blob store、IndexedDB を端末キャッシュとして扱います。本番の利用者認証は Cloudflare Access、Worker内の認可は `library_members` で行います。ブラウザとAPIは同一オリジンで提供し、MVPの正規APIパスは `/api/v1`、`/v1` は互換パスとして残します。
 
 ```mermaid
 flowchart LR
@@ -16,6 +16,7 @@ flowchart LR
   end
 
   subgraph CF["Cloudflare"]
+    Access["Cloudflare Access"]
     API["Hono API Worker"]
     D1[("D1: relational source of truth")]
     R2[("Private R2: PDF / derived / exports")]
@@ -29,7 +30,8 @@ flowchart LR
     Jobs <--> R2
   end
 
-  Web <-->|"cookie + JSON"| API
+  Web -->|"Cf-Access-Jwt-Assertion"| Access
+  Access -->|"validated request"| API
   Ext <-->|"PKCE bearer + JSON"| API
   Web <-->|"short-lived signed URL"| R2
   Ext <-->|"short-lived signed URL"| R2
@@ -45,7 +47,7 @@ flowchart LR
 | -------------- | ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | Web/PWA        | UI、PDF.js 描画、SHA-256 upload、IndexedDB cache/cursor/outbox schema                     | 永続正本、provider token、R2 credential、現在の PDF text/XMP 抽出                  |
 | Extension      | current page 抽出、同一 origin または明示確認済み PDF 取得、redirect 検証、R2 直接 upload | 任意 URL の server fetch、長期 access token、cross-origin PDF への credential 送信 |
-| API Worker     | 認証/認可、CRUD、署名発行、同期、短い export                                              | 重い PDF 処理、巨大 ZIP 生成                                                       |
+| API Worker     | Access JWT検証、library認可、CRUD、署名発行、同期、短い export                                 | 重い PDF 処理、巨大 ZIP 生成                                                       |
 | Jobs Worker    | 冪等 Crossref/arXiv enrich、PDF verify handler、reindex、backup ZIP、R2/account cleanup   | interactive response、複数 consumer、streaming ZIP                                 |
 | D1             | relational data、session hash、change log、job idempotency                                | PDF bytes、平文 bearer token                                                       |
 | R2             | PDF/derived/export blobs                                                                  | 公開配信、検索可能 metadata                                                        |
@@ -76,6 +78,8 @@ sequenceDiagram
 ```
 
 R2 key は `users/{userId}/papers/{paperId}/original/{fileId}.pdf` のように server-generated ID だけから作ります。original filename は D1 metadata にのみ保存します。本番署名には bucket-scoped R2 API token と `aws4fetch` を使い、binding だけでは署名しません。PUT signature は method/key/type/checksum/`If-None-Match` に加えて申告した実 byte 数の `Content-Length` を拘束します。これは JavaScript から設定できない browser-forbidden header なので client へは返さず、Blob/ArrayBuffer body から user agent が同じ値を導出します。ローカル Miniflare では認証済み proxy adapter へ切り替えるため、この browser/R2 interaction は remote smoke test で検証します。
+
+PDFは1論文に複数紐付けます。`file_kind`（本文、翻訳版、対訳版、補足資料、その他）、言語、表示名、並び順、既定PDFをD1に保存し、翻訳PDFの生成自体は利用者が外部ツールで行ってから手動登録します。失敗したアップロードは同じfile rowを再利用して再試行できます。
 
 Jobs Worker には `pdf.verify` handler もありますが、通常 upload flow は API の complete endpoint で検証を終え、現在その handler を enqueue する producer はありません。
 

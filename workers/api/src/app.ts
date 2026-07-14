@@ -17,6 +17,7 @@ import { collectionsRoutes, notesRoutes, paperTagsRoutes, tagsRoutes } from "./r
 import { filesRoutes, ingestionsRoutes } from "./routes/files";
 import { exportsRoutes, usageRoutes } from "./routes/exports";
 import { papersRoutes } from "./routes/papers";
+import { metadataRoutes } from "./routes/metadata";
 import { accountRoutes, preferencesRoutes } from "./routes/settings";
 import { syncRoutes } from "./routes/sync";
 import type { AppBindings } from "./types";
@@ -63,7 +64,6 @@ async function assertJsonBodyWithinLimit(request: Request): Promise<void> {
 
 function assertProductionConfiguration(env: AppBindings["Bindings"]): void {
   if (env.ENVIRONMENT !== "production") return;
-  const owner = env.OWNER_EMAIL?.trim() ?? "";
   const appOrigin = (() => {
     try {
       return new URL(env.APP_ORIGIN);
@@ -71,38 +71,28 @@ function assertProductionConfiguration(env: AppBindings["Bindings"]): void {
       return null;
     }
   })();
-  const googleRedirect = (() => {
-    try {
-      return new URL(env.GOOGLE_REDIRECT_URI ?? "");
-    } catch {
-      return null;
-    }
-  })();
   const origins = [...allowedOrigins(env.ALLOWED_ORIGINS)];
+  const accessTeamDomain = env.ACCESS_TEAM_DOMAIN?.trim() ?? "";
   const invalid =
     env.AUTH_DEV_BYPASS === "true" ||
-    !env.TOKEN_HASH_PEPPER ||
-    env.TOKEN_HASH_PEPPER.length < 32 ||
     !env.IP_HASH_SALT ||
     env.IP_HASH_SALT.length < 32 ||
-    !env.GOOGLE_CLIENT_ID ||
-    !env.GOOGLE_CLIENT_SECRET ||
     !env.R2_ACCESS_KEY_ID ||
     !env.R2_SECRET_ACCESS_KEY ||
     !env.R2_ACCOUNT_ID ||
     !/^[0-9a-f]{32}$/iu.test(env.R2_ACCOUNT_ID) ||
-    !owner ||
-    owner.includes("replace-with") ||
+    !accessTeamDomain ||
+    accessTeamDomain.includes("replace-with") ||
+    accessTeamDomain.includes("example.com") ||
+    accessTeamDomain.startsWith("http://") ||
+    (!accessTeamDomain.startsWith("https://") && !accessTeamDomain.includes(".")) ||
+    !env.ACCESS_AUDIENCE ||
+    env.ACCESS_AUDIENCE.includes("replace-with") ||
     !appOrigin ||
     appOrigin.protocol !== "https:" ||
     appOrigin.pathname !== "/" ||
     appOrigin.search !== "" ||
     appOrigin.hash !== "" ||
-    !googleRedirect ||
-    googleRedirect.origin !== appOrigin.origin ||
-    googleRedirect.pathname !== "/v1/auth/callback/google" ||
-    googleRedirect.search !== "" ||
-    googleRedirect.hash !== "" ||
     origins.length === 0 ||
     origins.some(
       (origin) => !origin.startsWith("https://") && !origin.startsWith("chrome-extension://"),
@@ -157,7 +147,7 @@ app.use("*", async (c, next) => {
 });
 
 async function rateLimit(c: Context<AppBindings>, next: Next): Promise<void> {
-  const authSensitive = c.req.path.startsWith("/v1/auth/");
+  const authSensitive = /^(?:\/v1|\/api\/v1)\/auth\//u.test(c.req.path);
   const uploadSensitive = c.req.path.endsWith("/files/upload-url");
   const expensive =
     (c.req.method === "POST" &&
@@ -211,14 +201,17 @@ app.post("/v1/auth/extension/token", exchangeExtensionToken);
 app.post("/v1/auth/refresh", refreshSession);
 
 app.use("/v1/*", authenticate);
+app.use("/api/v1/*", authenticate);
 
 app.get("/v1/auth/extension/authorize", authorizeExtension);
 app.get("/v1/auth/session", authSession);
+app.get("/v1/me", authSession);
 app.post("/v1/auth/logout", logout);
 app.get("/v1/auth/devices", listDevices);
 app.delete("/v1/auth/devices/:sessionId", revokeDevice);
 
 app.route("/v1/papers", papersRoutes);
+app.route("/v1", metadataRoutes);
 app.route("/v1/papers", paperTagsRoutes);
 app.route("/v1/tags", tagsRoutes);
 app.route("/v1/collections", collectionsRoutes);
@@ -230,6 +223,24 @@ app.route("/v1/exports", exportsRoutes);
 app.route("/v1/usage", usageRoutes);
 app.route("/v1/preferences", preferencesRoutes);
 app.route("/v1/account", accountRoutes);
+
+// The MVP contract uses /api/v1. Keep /v1 as a compatibility alias for the PWA and extension.
+app.get("/api/v1/me", authSession);
+app.route("/api/v1/items", papersRoutes);
+app.route("/api/v1/papers", papersRoutes);
+app.route("/api/v1", metadataRoutes);
+app.route("/api/v1", paperTagsRoutes);
+app.route("/api/v1/items", paperTagsRoutes);
+app.route("/api/v1/tags", tagsRoutes);
+app.route("/api/v1/collections", collectionsRoutes);
+app.route("/api/v1", notesRoutes);
+app.route("/api/v1", filesRoutes);
+app.route("/api/v1/ingestions", ingestionsRoutes);
+app.route("/api/v1/sync", syncRoutes);
+app.route("/api/v1/exports", exportsRoutes);
+app.route("/api/v1/usage", usageRoutes);
+app.route("/api/v1/preferences", preferencesRoutes);
+app.route("/api/v1/account", accountRoutes);
 
 app.notFound((c) =>
   c.json(

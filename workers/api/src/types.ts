@@ -31,7 +31,10 @@ export interface Env {
   AUTH_DEV_BYPASS?: string;
   OWNER_EMAIL?: string;
   DEV_AUTH_TOKEN?: string;
-  TOKEN_HASH_PEPPER: string;
+  ACCESS_TEAM_DOMAIN?: string;
+  ACCESS_AUDIENCE?: string;
+  ACCESS_JWKS_URL?: string;
+  TOKEN_HASH_PEPPER?: string;
   IP_HASH_SALT?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
@@ -51,11 +54,12 @@ export interface AuthUser {
   email: string;
   displayName: string;
   avatarUrl: string | null;
+  libraryId?: string;
 }
 
 export interface AuthSession {
   id: string;
-  via: "cookie" | "bearer";
+  via: "cookie" | "bearer" | "access";
 }
 
 export interface AppBindings {
@@ -64,5 +68,6 @@ export interface AppBindings {
     requestId: string;
     user: AuthUser;
     session: AuthSession;
+    libraryId: string;
   };
 }

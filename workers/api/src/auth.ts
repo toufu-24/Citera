@@ -37,6 +37,158 @@ interface IssuedSession {
   accessExpiresAt?: string;
 }
 
+interface AccessIdentityRow extends Record<string, unknown> {
+  id: string;
+  email: string;
+  display_name: string;
+  avatar_url: string | null;
+  status: string;
+  deletion_requested_at?: string | null;
+}
+
+interface LibraryRow extends Record<string, unknown> {
+  id: string;
+  kind: string;
+  name: string;
+}
+
+function accessIssuer(env: AppBindings["Bindings"]): string | null {
+  const configured = env.ACCESS_TEAM_DOMAIN?.trim();
+  if (!configured) return null;
+  return (configured.startsWith("http://") || configured.startsWith("https://")
+    ? configured
+    : `https://${configured}`
+  ).replace(/\/$/u, "");
+}
+
+function accessJwksUrl(env: AppBindings["Bindings"], issuer: string): string {
+  return env.ACCESS_JWKS_URL?.trim() || `${issuer}/cdn-cgi/access/certs`;
+}
+
+function assertLegacyAuthDisabled(env: AppBindings["Bindings"]): void {
+  if (env.ENVIRONMENT === "production") {
+    throw new ApiError(404, "NOT_FOUND", "The legacy authentication route is disabled.");
+  }
+}
+
+function claimText(payload: Record<string, unknown>, key: string): string | null {
+  const value = payload[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+async function ensurePersonalLibrary(db: D1Database, userId: string, displayName: string): Promise<LibraryRow> {
+  const existing = await first<LibraryRow>(
+    db,
+    `SELECT l.id,l.kind,l.name
+     FROM libraries l JOIN library_members m ON m.library_id=l.id
+     WHERE m.user_id=? AND m.status='active' AND l.kind='personal'
+     ORDER BY l.created_at LIMIT 1`,
+    userId,
+  );
+  if (existing) return existing;
+
+  const libraryId = userId.startsWith("usr_") ? `lib_${userId.slice(4)}` : createId("lib");
+  const now = nowUtcIso();
+  await db.batch([
+    db.prepare(
+      `INSERT OR IGNORE INTO libraries (id,kind,name,created_at)
+       VALUES (?,'personal',?,?)`,
+    ).bind(libraryId, `${displayName || "Personal"} library`, now),
+    db.prepare(
+      `INSERT OR IGNORE INTO library_members
+       (library_id,user_id,role,status,created_at) VALUES (? ,?,'owner','active',?)`,
+    ).bind(libraryId, userId, now),
+  ]);
+  const library = await first<LibraryRow>(
+    db,
+    `SELECT l.id,l.kind,l.name
+     FROM libraries l JOIN library_members m ON m.library_id=l.id
+     WHERE m.user_id=? AND m.status='active' AND l.kind='personal'
+     ORDER BY l.created_at LIMIT 1`,
+    userId,
+  );
+  if (!library) throw new ApiError(503, "LIBRARY_NOT_READY", "The personal library could not be created.");
+  return library;
+}
+
+async function upsertAccessUser(
+  c: Context<AppBindings>,
+  payload: Record<string, unknown>,
+  issuer: string,
+): Promise<{ user: AuthUser; library: LibraryRow }> {
+  const subject = claimText(payload, "sub");
+  if (!subject) throw new ApiError(401, "ACCESS_SUBJECT_INVALID", "Access JWT subject is missing.");
+  const email = claimText(payload, "email") ?? `${subject}@access.local`;
+  const displayName = claimText(payload, "name") ?? claimText(payload, "preferred_username") ?? email;
+  const avatarUrl = claimText(payload, "picture");
+  const byIdentity = await first<AccessIdentityRow>(
+    c.env.DB,
+    `SELECT id,email,display_name,avatar_url,status,deletion_requested_at FROM users
+     WHERE access_issuer=? AND access_subject=? LIMIT 1`,
+    issuer,
+    subject,
+  );
+  const byEmail = byIdentity
+    ? null
+    : await first<AccessIdentityRow>(
+        c.env.DB,
+        "SELECT id,email,display_name,avatar_url,status,deletion_requested_at FROM users WHERE email=? COLLATE NOCASE LIMIT 1",
+        email,
+      );
+  const existing = byIdentity ?? byEmail;
+  if (existing?.status === "departed" || existing?.deletion_requested_at) {
+    throw new ApiError(403, "USER_DEPARTED", "This user is no longer allowed to access Citera.");
+  }
+  const userId = existing?.id ?? createId("usr");
+  const now = nowUtcIso();
+  await c.env.DB.prepare(
+    `INSERT INTO users
+      (id,email,display_name,avatar_url,access_issuer,access_subject,status,created_at,updated_at)
+     VALUES (?,?,?,?,?,?, 'active',?,?)
+     ON CONFLICT(id) DO UPDATE SET
+       email=excluded.email,display_name=excluded.display_name,avatar_url=excluded.avatar_url,
+       access_issuer=excluded.access_issuer,access_subject=excluded.access_subject,
+       status='active',updated_at=excluded.updated_at
+     WHERE users.status <> 'departed' AND users.deletion_requested_at IS NULL`,
+  )
+    .bind(userId, email.toLowerCase(), displayName, avatarUrl, issuer, subject, now, now)
+    .run();
+  const library = await ensurePersonalLibrary(c.env.DB, userId, displayName);
+  return {
+    user: { id: userId, email: email.toLowerCase(), displayName, avatarUrl, libraryId: library.id },
+    library,
+  };
+}
+
+async function authenticateAccess(c: Context<AppBindings>, next: () => Promise<void>): Promise<void> {
+  const issuer = accessIssuer(c.env);
+  const audience = c.env.ACCESS_AUDIENCE?.trim();
+  const token = c.req.header("Cf-Access-Jwt-Assertion");
+  if (!issuer || !audience) {
+    throw new ApiError(503, "ACCESS_NOT_CONFIGURED", "Cloudflare Access verification is not configured.");
+  }
+  if (!token) throw new ApiError(401, "UNAUTHENTICATED", "A valid Cloudflare Access identity is required.");
+  let payload: Awaited<ReturnType<typeof verifyWithJwks>>;
+  try {
+    payload = await verifyWithJwks(
+      token,
+      {
+        jwks_uri: accessJwksUrl(c.env, issuer),
+        verification: { iss: issuer, aud: audience },
+        allowedAlgorithms: ["RS256"],
+      },
+      { signal: AbortSignal.timeout(8_000) },
+    );
+  } catch {
+    throw new ApiError(401, "UNAUTHENTICATED", "The Cloudflare Access identity is invalid or expired.");
+  }
+  const identity = await upsertAccessUser(c, payload, issuer);
+  c.set("user", identity.user);
+  c.set("libraryId", identity.library.id);
+  c.set("session", { id: `access:${claimText(payload, "sub")}`, via: "access" });
+  await next();
+}
+
 function sessionHash(env: AppBindings["Bindings"], token: string): Promise<string> {
   if (!env.TOKEN_HASH_PEPPER || env.TOKEN_HASH_PEPPER.length < 32) {
     throw new ApiError(
@@ -155,6 +307,10 @@ function sessionToContext(
 }
 
 export const authenticate: MiddlewareHandler<AppBindings> = async (c, next) => {
+  if (c.env.ENVIRONMENT === "production" || c.req.header("Cf-Access-Jwt-Assertion")) {
+    await authenticateAccess(c, next);
+    return;
+  }
   const authorization = c.req.header("Authorization");
   const bearer = authorization?.startsWith("Bearer ") ? authorization.slice(7).trim() : null;
   const cookie = getCookie(c, SESSION_COOKIE) ?? null;
@@ -191,8 +347,11 @@ export const authenticate: MiddlewareHandler<AppBindings> = async (c, next) => {
     throw new ApiError(401, "SESSION_EXPIRED", "The session is invalid or expired.");
   }
   const auth = sessionToContext(row, bearer ? "bearer" : "cookie");
+  const library = await ensurePersonalLibrary(c.env.DB, auth.user.id, auth.user.displayName);
+  auth.user.libraryId = library.id;
   c.set("user", auth.user);
   c.set("session", auth.session);
+  c.set("libraryId", library.id);
 
   if (auth.session.via === "cookie" && !["GET", "HEAD", "OPTIONS"].includes(c.req.method)) {
     const origin = c.req.header("Origin");
@@ -249,6 +408,7 @@ const googleProfileSchema = z.object({
 });
 
 export async function beginGoogleLogin(c: Context<AppBindings>): Promise<Response> {
+  assertLegacyAuthDisabled(c.env);
   if (c.req.param("provider") !== "google") {
     throw new ApiError(
       404,
@@ -292,6 +452,7 @@ interface OauthStateRow extends Record<string, unknown> {
 }
 
 export async function finishGoogleLogin(c: Context<AppBindings>): Promise<Response> {
+  assertLegacyAuthDisabled(c.env);
   if (c.req.param("provider") !== "google") {
     throw new ApiError(
       404,
@@ -542,7 +703,7 @@ export async function authorizeExtension(c: Context<AppBindings>): Promise<Respo
   const redirect = new URL(input.redirect_uri);
   redirect.searchParams.set("code", code);
   redirect.searchParams.set("state", input.state);
-  return c.redirect(redirect.toString(), 302);
+  return new Response(null, { status: 302, headers: { Location: redirect.toString() } });
 }
 
 const extensionTokenSchema = z.object({
@@ -571,6 +732,7 @@ interface AuthCodeRow extends Record<string, unknown> {
 }
 
 export async function exchangeExtensionToken(c: Context<AppBindings>): Promise<Response> {
+  assertLegacyAuthDisabled(c.env);
   const input = extensionTokenSchema.parse(await c.req.json());
   const hash = await sha256Hex(input.code);
   const saved = await first<AuthCodeRow>(
@@ -631,6 +793,7 @@ interface RefreshRow extends Record<string, unknown> {
 }
 
 export async function refreshSession(c: Context<AppBindings>): Promise<Response> {
+  assertLegacyAuthDisabled(c.env);
   const body = refreshSchema.parse(await c.req.json().catch(() => ({})));
   const cookieToken = getCookie(c, SESSION_COOKIE);
   if (!body.refreshToken && cookieToken) {
@@ -714,6 +877,10 @@ export async function authSession(c: Context<AppBindings>): Promise<Response> {
   );
   return c.json({
     user: c.get("user"),
+    library: {
+      id: c.get("libraryId"),
+      kind: "personal",
+    },
     session: { id: c.get("session").id, expiresAt: row?.expires_at ?? null },
     expiresAt: row?.expires_at ?? null,
   });

@@ -1,100 +1,110 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "citera-api",
-  "main": "workers/api/src/index.ts",
-  "compatibility_date": "2026-07-13",
-  "compatibility_flags": ["nodejs_compat"],
-  "workers_dev": true,
-  "minify": true,
-  "assets": {
-    "directory": "./apps/web/dist",
-    "not_found_handling": "single-page-application",
-    "run_worker_first": ["/v1/*", "/health"],
-  },
-  "observability": {
-    "enabled": true,
-    "head_sampling_rate": 0.1,
-  },
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "citera-db",
-      "database_id": "00000000-0000-0000-0000-000000000000",
-      "migrations_dir": "migrations",
-    },
-  ],
-  "r2_buckets": [
-    {
-      "binding": "FILES",
-      "bucket_name": "citera-files",
-    },
-  ],
-  "queues": {
-    "producers": [
-      {
-        "binding": "JOBS",
-        "queue": "citera-jobs",
-      },
-    ],
-  },
-  "vars": {
-    "ENVIRONMENT": "development",
-    "APP_ORIGIN": "http://localhost:5173",
-    "ALLOWED_ORIGINS": "http://localhost:5173,http://localhost:4173",
-    "ALLOWED_EXTENSION_IDS": "replace-with-extension-id",
-    "AUTH_DEV_BYPASS": "false",
-    "R2_BUCKET_NAME": "citera-files",
-    "MAX_PDF_BYTES": "104857600",
-    "MAX_USER_STORAGE_BYTES": "5368709120",
-    "MAX_EXPORT_BYTES": "26214400",
-    "PRESIGN_TTL_SECONDS": "300",
-  },
-  "env": {
-    "production": {
-      "name": "citera-api",
-      "workers_dev": false,
-      "assets": {
-        "directory": "./apps/web/dist",
-        "not_found_handling": "single-page-application",
-        "run_worker_first": ["/v1/*", "/health"],
-      },
-      "d1_databases": [
-        {
-          "binding": "DB",
-          "database_name": "citera-db",
-          "database_id": "00000000-0000-0000-0000-000000000000",
-          "migrations_dir": "migrations",
-        },
-      ],
-      "r2_buckets": [
-        {
-          "binding": "FILES",
-          "bucket_name": "citera-files",
-        },
-      ],
-      "queues": {
-        "producers": [
-          {
-            "binding": "JOBS",
-            "queue": "citera-jobs",
-          },
-        ],
-      },
-      "vars": {
-        "ENVIRONMENT": "production",
-        "APP_ORIGIN": "https://citera.example.com",
-        "ALLOWED_ORIGINS": "https://citera.example.com,chrome-extension://replace-with-extension-id",
-        "ALLOWED_EXTENSION_IDS": "replace-with-extension-id",
-        "OWNER_EMAIL": "replace-with-owner@example.com",
-        "GOOGLE_REDIRECT_URI": "https://citera.example.com/v1/auth/callback/google",
-        "AUTH_DEV_BYPASS": "false",
-        "R2_ACCOUNT_ID": "replace-with-r2-account-id",
-        "R2_BUCKET_NAME": "citera-files",
-        "MAX_PDF_BYTES": "104857600",
-        "MAX_USER_STORAGE_BYTES": "5368709120",
-        "MAX_EXPORT_BYTES": "26214400",
-        "PRESIGN_TTL_SECONDS": "300",
-      },
-    },
-  },
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "citera-api",
+	"main": "workers/api/src/index.ts",
+	"compatibility_date": "2026-07-13",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"workers_dev": true,
+	"minify": true,
+	"assets": {
+		"directory": "./apps/web/dist",
+		"not_found_handling": "single-page-application",
+		"run_worker_first": [
+			"/api/v1/*",
+			"/v1/*",
+			"/health"
+		],
+	},
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 0.1,
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "citera-db",
+			"database_id": "47d52c9b-6bc6-4410-82b2-e022764984f8",
+			"migrations_dir": "migrations",
+		},
+	],
+	"r2_buckets": [
+		{
+			"binding": "FILES",
+			"bucket_name": "citera-files",
+		},
+	],
+	"queues": {
+		"producers": [
+			{
+				"binding": "JOBS",
+				"queue": "citera-jobs",
+			},
+		],
+	},
+	"vars": {
+		"ENVIRONMENT": "development",
+		"APP_ORIGIN": "http://localhost:5173",
+		"ALLOWED_ORIGINS": "http://localhost:5173,http://localhost:4173",
+		"ALLOWED_EXTENSION_IDS": "replace-with-extension-id",
+		"AUTH_DEV_BYPASS": "false",
+		"R2_BUCKET_NAME": "citera-files",
+		"MAX_PDF_BYTES": "104857600",
+		"MAX_USER_STORAGE_BYTES": "5368709120",
+		"MAX_EXPORT_BYTES": "26214400",
+		"PRESIGN_TTL_SECONDS": "300",
+	},
+	"env": {
+		"production": {
+			"name": "citera-api",
+			"workers_dev": false,
+			"assets": {
+				"directory": "./apps/web/dist",
+				"not_found_handling": "single-page-application",
+				"run_worker_first": [
+					"/api/v1/*",
+					"/v1/*",
+					"/health"
+				],
+			},
+			"d1_databases": [
+				{
+					"binding": "DB",
+					"database_name": "citera-db",
+					"database_id": "00000000-0000-0000-0000-000000000000",
+					"migrations_dir": "migrations",
+				},
+			],
+			"r2_buckets": [
+				{
+					"binding": "FILES",
+					"bucket_name": "citera-files",
+				},
+			],
+			"queues": {
+				"producers": [
+					{
+						"binding": "JOBS",
+						"queue": "citera-jobs",
+					},
+				],
+			},
+			"vars": {
+				"ENVIRONMENT": "production",
+				"APP_ORIGIN": "https://citera.fujinoso.com",
+				"ALLOWED_ORIGINS": "https://citera.fujinoso.com,chrome-extension://bcmpmggbgiaemocjepddaeoehflhmhld",
+				"ALLOWED_EXTENSION_IDS": "bcmpmggbgiaemocjepddaeoehflhmhld",
+				"ACCESS_TEAM_DOMAIN": "replace-with-team.cloudflareaccess.com",
+				"ACCESS_AUDIENCE": "replace-with-access-application-audience",
+				"AUTH_DEV_BYPASS": "false",
+				"R2_ACCOUNT_ID": "29a5c74691f1a050ade82be811456ab3",
+				"R2_BUCKET_NAME": "citera-files",
+				"MAX_PDF_BYTES": "104857600",
+				"MAX_USER_STORAGE_BYTES": "5368709120",
+				"MAX_EXPORT_BYTES": "26214400",
+				"PRESIGN_TTL_SECONDS": "300",
+			},
+		},
+	},
 }
