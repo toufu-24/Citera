@@ -462,9 +462,26 @@ papersRoutes.get("/", async (c) => {
   }
   if (input.collection) {
     where.push(
-      "EXISTS(SELECT 1 FROM collection_papers cp JOIN collections c ON c.id=cp.collection_id AND c.user_id=cp.user_id WHERE cp.user_id=p.user_id AND cp.paper_id=p.id AND c.deleted_at IS NULL AND (c.id=? OR lower(c.name)=lower(?)))",
+      `EXISTS(
+        WITH RECURSIVE collection_tree(id, user_id) AS (
+          SELECT c.id, c.user_id
+          FROM collections c
+          WHERE c.user_id=? AND c.deleted_at IS NULL AND (c.id=? OR lower(c.name)=lower(?))
+          UNION ALL
+          SELECT child.id, child.user_id
+          FROM collection_tree parent
+          JOIN collections child
+            ON child.parent_id=parent.id
+           AND child.user_id=parent.user_id
+           AND child.deleted_at IS NULL
+        )
+        SELECT 1
+        FROM collection_papers cp
+        JOIN collection_tree tree ON tree.id=cp.collection_id
+        WHERE cp.user_id=p.user_id AND cp.paper_id=p.id
+      )`,
     );
-    bindings.push(input.collection, input.collection);
+    bindings.push(userId, input.collection, input.collection);
   }
   if (input.tags) {
     for (const tag of input.tags

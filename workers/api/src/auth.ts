@@ -953,9 +953,35 @@ export async function authSession(c: Context<AppBindings>): Promise<Response> {
 }
 
 export async function logout(c: Context<AppBindings>): Promise<Response> {
-  await c.env.DB.prepare("UPDATE sessions SET revoked_at = ? WHERE id = ? AND user_id = ?")
-    .bind(nowUtcIso(), c.get("session").id, c.get("user").id)
-    .run();
+  const body = (await c.req.json().catch(() => ({}))) as { refreshToken?: unknown };
+  const cookieToken = getCookie(c, SESSION_COOKIE);
+  const authorization = c.req.header("Authorization");
+  const bearerToken = authorization?.startsWith("Bearer ")
+    ? authorization.slice(7).trim()
+    : null;
+  const refreshToken = typeof body.refreshToken === "string" ? body.refreshToken : null;
+  const now = nowUtcIso();
+  const statements: D1PreparedStatement[] = [];
+  const sessionTokens = new Set(
+    [cookieToken, refreshToken].filter(
+      (token): token is string => typeof token === "string" && token.length >= 32 && token.length <= 256,
+    ),
+  );
+  for (const token of sessionTokens) {
+    statements.push(
+      c.env.DB.prepare(
+        "UPDATE sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL",
+      ).bind(now, await sessionHash(c.env, token)),
+    );
+  }
+  if (bearerToken && bearerToken.length >= 32 && bearerToken.length <= 256) {
+    statements.push(
+      c.env.DB.prepare(
+        "UPDATE sessions SET revoked_at = ? WHERE access_token_hash = ? AND revoked_at IS NULL",
+      ).bind(now, await sessionHash(c.env, bearerToken)),
+    );
+  }
+  if (statements.length) await c.env.DB.batch(statements);
   deleteCookie(c, SESSION_COOKIE, { path: "/" });
   return c.body(null, 204);
 }

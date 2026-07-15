@@ -11,6 +11,7 @@ export function AppShell() {
   const [syncStatus, setSyncStatus] = useState<SyncStatus>(
     navigator.onLine ? "syncing" : "offline",
   );
+  const [loggingOut, setLoggingOut] = useState(false);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const location = useLocation();
@@ -29,6 +30,8 @@ export function AppShell() {
   useEffect(() => installSyncTriggers(setSyncStatus), []);
 
   async function logout() {
+    if (loggingOut) return;
+    setLoggingOut(true);
     const accessSession = session.data?.session?.authenticationMethod === "access";
     try {
       await api.logout();
@@ -39,11 +42,15 @@ export function AppShell() {
       );
     } finally {
       queryClient.clear();
-      await clearActiveDatabase();
+      try {
+        await clearActiveDatabase();
+      } catch (error) {
+        console.warn("The local Citera database could not be cleared during logout.", error);
+      }
       if (accessSession) {
-        window.location.assign("/cdn-cgi/access/logout");
+        window.location.replace("/cdn-cgi/access/logout");
       } else {
-        void navigate({ to: "/login", search: { returnTo: undefined } });
+        window.location.replace("/login");
       }
     }
   }
@@ -80,8 +87,11 @@ export function AppShell() {
               </span>
             </Link>
             <button
+              type="button"
               className="icon-button header-logout"
               onClick={() => void logout()}
+              disabled={loggingOut}
+              aria-busy={loggingOut}
               aria-label="ログアウト"
             >
               <LogOut size={17} />

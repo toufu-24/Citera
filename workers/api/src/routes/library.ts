@@ -313,9 +313,25 @@ export const collectionsRoutes = new Hono<AppBindings>();
 collectionsRoutes.get("/", async (c) => {
   const rows = await all<Record<string, unknown>>(
     c.env.DB,
-    `SELECT c.*, COUNT(cp.paper_id) AS paper_count
-     FROM collections c LEFT JOIN collection_papers cp ON cp.collection_id=c.id AND cp.user_id=c.user_id
+    `WITH RECURSIVE collection_tree(root_id, collection_id, user_id) AS (
+       SELECT c.id, c.id, c.user_id
+       FROM collections c
+       WHERE c.user_id=? AND c.deleted_at IS NULL
+       UNION ALL
+       SELECT tree.root_id, child.id, child.user_id
+       FROM collection_tree tree
+       JOIN collections child
+         ON child.parent_id=tree.collection_id
+        AND child.user_id=tree.user_id
+        AND child.deleted_at IS NULL
+     )
+     SELECT c.*, COUNT(DISTINCT p.id) AS paper_count
+     FROM collections c
+     LEFT JOIN collection_tree tree ON tree.root_id=c.id
+     LEFT JOIN collection_papers cp ON cp.collection_id=tree.collection_id AND cp.user_id=c.user_id
+     LEFT JOIN papers p ON p.id=cp.paper_id AND p.user_id=c.user_id AND p.deleted_at IS NULL
      WHERE c.user_id=? AND c.deleted_at IS NULL GROUP BY c.id ORDER BY lower(c.name)`,
+    c.get("user").id,
     c.get("user").id,
   );
   return c.json({ items: rows.map(collectionResponse) });
@@ -440,6 +456,26 @@ collectionsRoutes.patch("/:collectionId", async (c) => {
 collectionsRoutes.delete("/:collectionId", async (c) => {
   const userId = c.get("user").id;
   const id = c.req.param("collectionId");
+  const existing = await first<Record<string, unknown>>(
+    c.env.DB,
+    "SELECT id FROM collections WHERE id=? AND user_id=? AND deleted_at IS NULL",
+    id,
+    userId,
+  );
+  if (!existing) throw new ApiError(404, "COLLECTION_NOT_FOUND", "Collection was not found.");
+  const childCount = await first<{ count: number } & Record<string, unknown>>(
+    c.env.DB,
+    "SELECT COUNT(*) AS count FROM collections WHERE user_id=? AND parent_id=? AND deleted_at IS NULL",
+    userId,
+    id,
+  );
+  if (Number(childCount?.count ?? 0) > 0) {
+    throw new ApiError(
+      409,
+      "COLLECTION_HAS_CHILDREN",
+      "Move or delete child collections before deleting this collection.",
+    );
+  }
   const now = nowUtcIso();
   const update = await c.env.DB.prepare(
     "UPDATE collections SET deleted_at=?,updated_at=? WHERE id=? AND user_id=? AND deleted_at IS NULL",

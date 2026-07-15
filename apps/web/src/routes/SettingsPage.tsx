@@ -19,8 +19,15 @@ import {
   UserRound,
 } from "lucide-react";
 
-import { api, type CollectionRecord, type PaperTag, type UserPreferences } from "../lib/api";
+import {
+  ApiRequestError,
+  api,
+  type CollectionRecord,
+  type PaperTag,
+  type UserPreferences,
+} from "../lib/api";
 import { clearActiveDatabase } from "../lib/database";
+import { collectionOptions } from "../lib/collections";
 
 const initialPreferences: UserPreferences = {
   defaultCollectionId: null,
@@ -36,6 +43,17 @@ function bytes(value: number) {
     unit: value >= 1_000_000_000 ? "gigabyte" : "megabyte",
     maximumFractionDigits: 1,
   }).format(value >= 1_000_000_000 ? value / 1_000_000_000 : value / 1_000_000);
+}
+
+function collectionErrorMessage(error: unknown, fallback: string): string {
+  if (!(error instanceof ApiRequestError)) return fallback;
+  if (error.code === "COLLECTION_HAS_CHILDREN") {
+    return "子フォルダーを先に移動または削除してから、親フォルダーを削除してください。";
+  }
+  if (error.code === "COLLECTION_CYCLE") {
+    return "この親フォルダーは階層が循環するため選択できません。";
+  }
+  return error.message || fallback;
 }
 
 function TagEditor({ tag }: { tag: PaperTag }) {
@@ -111,6 +129,8 @@ function CollectionEditor({
   const [name, setName] = useState(collection.name);
   const [description, setDescription] = useState(collection.description ?? "");
   const [parentId, setParentId] = useState(collection.parentId ?? "");
+  const parentOptions = collectionOptions(collections, collection.id);
+  const hasChildren = collections.some((candidate) => candidate.parentId === collection.id);
   const update = useMutation({
     mutationFn: () =>
       api.updateCollection(collection.id, {
@@ -147,16 +167,14 @@ function CollectionEditor({
         <select
           value={parentId}
           onChange={(event) => setParentId(event.target.value)}
-          aria-label={`${collection.name} の親コレクション`}
+          aria-label={`${collection.name} の親フォルダー / 子フォルダー`}
         >
           <option value="">親なし</option>
-          {collections
-            .filter((candidate) => candidate.id !== collection.id)
-            .map((candidate) => (
-              <option key={candidate.id} value={candidate.id}>
-                {candidate.name}
-              </option>
-            ))}
+          {parentOptions.map(({ collection: candidate, label }) => (
+            <option key={candidate.id} value={candidate.id}>
+              {label}
+            </option>
+          ))}
         </select>
       </div>
       <span>{collection.paperCount ?? 0}件</span>
@@ -171,7 +189,8 @@ function CollectionEditor({
       <button
         type="button"
         className="text-button danger"
-        disabled={remove.isPending}
+        disabled={remove.isPending || hasChildren}
+        title={hasChildren ? "子フォルダーを先に移動または削除してください" : undefined}
         onClick={() => {
           if (
             window.confirm(
@@ -185,7 +204,12 @@ function CollectionEditor({
         削除
       </button>
       {(update.error || remove.error) && (
-        <span className="manager-error">保存できませんでした</span>
+        <span className="manager-error">
+          {collectionErrorMessage(
+            remove.error ?? update.error,
+            "フォルダーを保存できませんでした。",
+          )}
+        </span>
       )}
     </div>
   );
@@ -204,6 +228,7 @@ function LibraryOrganization({
   const [collectionName, setCollectionName] = useState("");
   const [collectionDescription, setCollectionDescription] = useState("");
   const [collectionParentId, setCollectionParentId] = useState("");
+  const organizedCollections = collectionOptions(collections);
   const createTag = useMutation({
     mutationFn: () => api.createTag({ name: tagName.trim(), color: tagColor }),
     onSuccess: () => {
@@ -272,36 +297,46 @@ function LibraryOrganization({
 
       <section>
         <h3>
-          <FolderTree size={16} /> コレクション
+          <FolderTree size={16} /> フォルダー
         </h3>
         <form className="manager-create-form collection-create-form" onSubmit={submitCollection}>
-          <input
-            value={collectionName}
-            maxLength={200}
-            placeholder="新しいコレクション"
-            aria-label="新しいコレクション名"
-            onChange={(event) => setCollectionName(event.target.value)}
-          />
-          <input
-            value={collectionDescription}
-            maxLength={10_000}
-            placeholder="説明（任意）"
-            aria-label="新しいコレクションの説明"
-            onChange={(event) => setCollectionDescription(event.target.value)}
-          />
-          <select
-            value={collectionParentId}
-            onChange={(event) => setCollectionParentId(event.target.value)}
-            aria-label="親コレクション"
-          >
-            <option value="">親なし</option>
-            {collections.map((collection) => (
-              <option key={collection.id} value={collection.id}>
-                {collection.name}
-              </option>
-            ))}
-          </select>
+          <label className="collection-create-field">
+            <span>フォルダー名</span>
+            <input
+              value={collectionName}
+              maxLength={200}
+              placeholder="例：2026年の研究"
+              aria-label="新しいコレクション名"
+              onChange={(event) => setCollectionName(event.target.value)}
+            />
+          </label>
+          <label className="collection-create-field">
+            <span>説明 <small>任意</small></span>
+            <input
+              value={collectionDescription}
+              maxLength={10_000}
+              placeholder="このフォルダーの用途"
+              aria-label="新しいコレクションの説明"
+              onChange={(event) => setCollectionDescription(event.target.value)}
+            />
+          </label>
+          <label className="collection-create-field">
+            <span>親フォルダー / 子フォルダー</span>
+            <select
+              value={collectionParentId}
+              onChange={(event) => setCollectionParentId(event.target.value)}
+              aria-label="親フォルダー / 子フォルダー"
+            >
+              <option value="">最上位に作成</option>
+              {organizedCollections.map(({ collection, label }) => (
+                <option key={collection.id} value={collection.id}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
           <button
+            type="submit"
             className="button secondary compact"
             disabled={!collectionName.trim() || createCollection.isPending}
           >
@@ -309,7 +344,7 @@ function LibraryOrganization({
           </button>
         </form>
         <div className="manager-list">
-          {collections.map((collection) => (
+          {organizedCollections.map(({ collection }) => (
             <CollectionEditor
               key={collection.id}
               collection={collection}
@@ -319,7 +354,9 @@ function LibraryOrganization({
           {!collections.length && <p className="settings-hint">コレクションはまだありません。</p>}
         </div>
         {createCollection.error && (
-          <p className="form-error">コレクションを作成できませんでした。</p>
+          <p className="form-error" role="alert">
+            {collectionErrorMessage(createCollection.error, "フォルダーを作成できませんでした。")}
+          </p>
         )}
       </section>
     </div>
@@ -524,9 +561,9 @@ export function SettingsPage() {
                   }
                 >
                   <option value="">指定なし</option>
-                  {collections.data?.map((collection) => (
+                  {collectionOptions(collections.data ?? []).map(({ collection, label }) => (
                     <option key={collection.id} value={collection.id}>
-                      {collection.name}
+                      {label}
                     </option>
                   ))}
                 </select>
@@ -605,8 +642,8 @@ export function SettingsPage() {
                 <Tags size={19} />
               </div>
               <div>
-                <h2>タグとコレクション</h2>
-                <p>分類を作成・変更し、コレクションの階層を管理します。</p>
+            <h2>タグとフォルダー</h2>
+            <p>分類を作成・変更し、フォルダーの階層を管理します。</p>
               </div>
             </header>
             {tags.isPending || collections.isPending ? (

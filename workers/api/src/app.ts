@@ -197,6 +197,7 @@ app.get("/v1/health", async (c) => {
 });
 
 app.post("/v1/auth/dev-login", devLogin);
+app.post("/v1/auth/logout", logout);
 app.get("/v1/auth/login/:provider", beginGoogleLogin);
 app.get("/v1/auth/callback/:provider", finishGoogleLogin);
 app.post("/v1/auth/extension/token", exchangeExtensionToken);
@@ -208,7 +209,6 @@ app.use("/api/v1/*", authenticate);
 app.get("/v1/auth/extension/authorize", authorizeExtension);
 app.get("/v1/auth/session", authSession);
 app.get("/v1/me", authSession);
-app.post("/v1/auth/logout", logout);
 app.get("/v1/auth/devices", listDevices);
 app.delete("/v1/auth/devices/:sessionId", revokeDevice);
 

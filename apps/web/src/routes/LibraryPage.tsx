@@ -6,6 +6,7 @@ import {
   BookOpen,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   Copy,
   Download,
   FileText,
@@ -24,11 +25,19 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { ActionMenu } from "../components/ActionMenu";
-import { ApiRequestError, api, type CollectionRecord, type PaperListItem } from "../lib/api";
+import { ApiRequestError, api, type PaperListItem } from "../lib/api";
 import { copyText } from "../lib/clipboard";
+import {
+  collectionAncestorIds,
+  collectionDescendantIds,
+  collectionOptions as buildCollectionOptions,
+  collectionPath,
+  collectionTree,
+  type CollectionTreeNode,
+} from "../lib/collections";
 import { db } from "../lib/database";
 import { parseCitationFile, resolveImportedTagIds } from "../lib/import";
 import { PaperDetailView } from "./PaperDetailPage";
@@ -88,21 +97,6 @@ function duplicateDetailsFromError(error: unknown): {
     deletedAt: typeof details.deletedAt === "string" ? details.deletedAt : null,
     version: typeof details.version === "number" ? details.version : null,
   };
-}
-
-function collectionPath(collection: CollectionRecord, collections: CollectionRecord[]): string {
-  const byId = new Map(collections.map((item) => [item.id, item]));
-  const names = [collection.name];
-  const visited = new Set([collection.id]);
-  let parentId = collection.parentId;
-  while (parentId && !visited.has(parentId)) {
-    visited.add(parentId);
-    const parent = byId.get(parentId);
-    if (!parent) break;
-    names.unshift(parent.name);
-    parentId = parent.parentId;
-  }
-  return names.join(" / ");
 }
 
 function PaperRow({
@@ -283,6 +277,7 @@ export function LibraryPage() {
   const [bulkTagId, setBulkTagId] = useState("");
   const [bulkCollectionId, setBulkCollectionId] = useState("");
   const [selectedCollectionId, setSelectedCollectionId] = useState("");
+  const [expandedCollectionIds, setExpandedCollectionIds] = useState<Set<string>>(new Set());
   const [collectionCreatorOpen, setCollectionCreatorOpen] = useState(false);
   const [newCollectionName, setNewCollectionName] = useState("");
   const [newCollectionParentId, setNewCollectionParentId] = useState("");
@@ -422,15 +417,42 @@ export function LibraryPage() {
     enabled: selected.size > 0 && status !== "deleted",
   });
   const collectionOptions = useMemo(
-    () =>
-      (collections.data ?? [])
-        .map((collection) => ({
-          collection,
-          label: collectionPath(collection, collections.data ?? []),
-        }))
-        .sort((left, right) => left.label.localeCompare(right.label, "ja")),
+    () => buildCollectionOptions(collections.data ?? []),
     [collections.data],
   );
+  const collectionTreeNodes = useMemo(
+    () => collectionTree(collections.data ?? []),
+    [collections.data],
+  );
+  const selectedCollection = useMemo(
+    () => collections.data?.find((collection) => collection.id === selectedCollectionId),
+    [collections.data, selectedCollectionId],
+  );
+  const selectedCollectionDescendantCount = useMemo(
+    () =>
+      selectedCollection && collections.data
+        ? collectionDescendantIds(selectedCollection.id, collections.data).length
+        : 0,
+    [collections.data, selectedCollection],
+  );
+
+  useEffect(() => {
+    if (!collections.isSuccess || !selectedCollectionId) return;
+    if (!collections.data.some((collection) => collection.id === selectedCollectionId)) {
+      setSelectedCollectionId("");
+    }
+  }, [collections.data, collections.isSuccess, selectedCollectionId]);
+
+  useEffect(() => {
+    if (!selectedCollectionId || !collections.data) return;
+    const ancestors = collectionAncestorIds(selectedCollectionId, collections.data);
+    if (!ancestors.length) return;
+    setExpandedCollectionIds((current) => {
+      const next = new Set(current);
+      ancestors.forEach((id) => next.add(id));
+      return next.size === current.size ? current : next;
+    });
+  }, [collections.data, selectedCollectionId]);
 
   useEffect(() => {
     if (tagCreatorOpen) newTagNameRef.current?.focus();
@@ -759,6 +781,61 @@ export function LibraryPage() {
     createPaper.mutate(body);
   }
 
+  function renderCollectionTree(nodes: CollectionTreeNode[], depth = 0): ReactNode[] {
+    return nodes.flatMap((node) => {
+      const hasChildren = node.children.length > 0;
+      const expanded = expandedCollectionIds.has(node.collection.id);
+      const rows: ReactNode[] = [
+        <div
+          className={`collection-tree-row${selectedCollectionId === node.collection.id ? " active" : ""}`}
+          key={node.collection.id}
+          role="treeitem"
+          aria-level={depth + 1}
+          aria-expanded={hasChildren ? expanded : undefined}
+          style={{ paddingLeft: `${8 + depth * 18}px` }}
+        >
+          {hasChildren ? (
+            <button
+              type="button"
+              className="collection-tree-toggle"
+              aria-label={`${node.collection.name} の子フォルダーを${expanded ? "閉じる" : "開く"}`}
+              aria-expanded={expanded}
+              onClick={() =>
+                setExpandedCollectionIds((current) => {
+                  const next = new Set(current);
+                  if (next.has(node.collection.id)) next.delete(node.collection.id);
+                  else next.add(node.collection.id);
+                  return next;
+                })
+              }
+            >
+              <ChevronRight size={14} className={expanded ? "is-expanded" : ""} />
+            </button>
+          ) : (
+            <span className="collection-tree-spacer" aria-hidden="true" />
+          )}
+          <button
+            type="button"
+            className="collection-tree-filter"
+            aria-pressed={selectedCollectionId === node.collection.id}
+            title={collectionPath(node.collection, collections.data ?? [])}
+            onClick={() => setSelectedCollectionId(node.collection.id)}
+          >
+            {selectedCollectionId === node.collection.id ? (
+              <FolderOpen size={15} />
+            ) : (
+              <Folder size={15} />
+            )}
+            <span>{node.collection.name}</span>
+            <small>{node.collection.paperCount ?? 0}</small>
+          </button>
+        </div>,
+      ];
+      if (hasChildren && expanded) rows.push(...renderCollectionTree(node.children, depth + 1));
+      return rows;
+    });
+  }
+
   return (
     <div className="page library-page">
       <header className="page-heading library-heading">
@@ -907,6 +984,7 @@ export function LibraryPage() {
             type="button"
             className="text-button"
             aria-expanded={collectionCreatorOpen}
+            aria-controls="quick-collection-creator"
             onClick={() => {
               setCollectionCreatorOpen((open) => !open);
               createQuickCollection.reset();
@@ -918,44 +996,61 @@ export function LibraryPage() {
 
         {collectionCreatorOpen && (
           <form
+            id="quick-collection-creator"
             className="quick-collection-creator"
             onSubmit={(event) => {
               event.preventDefault();
               if (newCollectionName.trim()) createQuickCollection.mutate();
             }}
           >
-            <input
-              value={newCollectionName}
-              maxLength={200}
-              autoFocus
-              placeholder="フォルダー名"
-              aria-label="新しいフォルダー名"
-              onChange={(event) => {
-                setNewCollectionName(event.target.value);
-                createQuickCollection.reset();
-              }}
-            />
-            <select
-              value={newCollectionParentId}
-              onChange={(event) => setNewCollectionParentId(event.target.value)}
-              aria-label="親フォルダー"
-            >
-              <option value="">最上位に作成</option>
-              {collectionOptions.map(({ collection, label }) => (
-                <option key={collection.id} value={collection.id}>
-                  {label}
-                </option>
-              ))}
-            </select>
-            <button
-              className="button secondary compact"
-              disabled={!newCollectionName.trim() || createQuickCollection.isPending}
-            >
-              {createQuickCollection.isPending ? "作成中…" : "作成"}
-            </button>
+            <div className="quick-collection-heading">
+              <div>
+                <FolderPlus size={16} />
+                <strong>新しいフォルダー</strong>
+              </div>
+              <span>論文を整理する場所を作成します</span>
+            </div>
+            <div className="quick-collection-fields">
+              <label>
+                <span>フォルダー名</span>
+                <input
+                  value={newCollectionName}
+                  maxLength={200}
+                  autoFocus
+                  placeholder="例：2026年の研究"
+                  onChange={(event) => {
+                    setNewCollectionName(event.target.value);
+                    createQuickCollection.reset();
+                  }}
+                />
+              </label>
+              <label>
+                <span>親フォルダー / 子フォルダー</span>
+                <select
+                  value={newCollectionParentId}
+                  onChange={(event) => setNewCollectionParentId(event.target.value)}
+                >
+                  <option value="">最上位に作成</option>
+                  {collectionOptions.map(({ collection, label }) => (
+                    <option key={collection.id} value={collection.id}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="submit"
+                className="button secondary compact"
+                disabled={!newCollectionName.trim() || createQuickCollection.isPending}
+              >
+                <FolderPlus size={15} /> {createQuickCollection.isPending ? "作成中…" : "作成"}
+              </button>
+            </div>
             {createQuickCollection.isError && (
               <span className="quick-tag-feedback error" role="alert">
-                フォルダーを作成できませんでした。
+                {createQuickCollection.error instanceof ApiRequestError
+                  ? createQuickCollection.error.message
+                  : "フォルダーを作成できませんでした。"}
               </span>
             )}
           </form>
@@ -964,34 +1059,34 @@ export function LibraryPage() {
         <nav className="collection-filter-list" aria-label="フォルダーで絞り込む">
           <button
             type="button"
-            className={selectedCollectionId ? "" : "active"}
+            className={`collection-filter-all${selectedCollectionId ? "" : " active"}`}
             aria-pressed={!selectedCollectionId}
             onClick={() => setSelectedCollectionId("")}
           >
             <FolderOpen size={15} /> すべての論文
           </button>
-          {collectionOptions.map(({ collection, label }) => (
-            <button
-              type="button"
-              key={collection.id}
-              className={selectedCollectionId === collection.id ? "active" : ""}
-              aria-pressed={selectedCollectionId === collection.id}
-              title={collection.description ?? undefined}
-              onClick={() => setSelectedCollectionId(collection.id)}
-            >
-              {selectedCollectionId === collection.id ? (
-                <FolderOpen size={15} />
-              ) : (
-                <Folder size={15} />
-              )}
-              <span>{label}</span>
-              <small>{collection.paperCount ?? 0}</small>
-            </button>
-          ))}
+          <div className="collection-tree" role="tree" aria-label="フォルダー一覧">
+            {renderCollectionTree(collectionTreeNodes)}
+          </div>
           {!collections.isPending && collectionOptions.length === 0 && (
             <span className="collection-empty-hint">フォルダーはまだありません。</span>
           )}
         </nav>
+        {selectedCollection && (
+          <div className="collection-active-summary" role="status">
+            <FolderOpen size={15} />
+            <span>
+              <strong>{selectedCollection.name}</strong>
+              <small>
+                {collectionPath(selectedCollection, collections.data ?? [])} · {selectedCollection.paperCount ?? 0}件
+                {selectedCollectionDescendantCount > 0 ? " · 子フォルダーを含む" : ""}
+              </small>
+            </span>
+            <button type="button" className="text-button" onClick={() => setSelectedCollectionId("")}>
+              解除
+            </button>
+          </div>
+        )}
       </section>
 
       <section className="library-toolbar" aria-label="ライブラリの検索とフィルター">
