@@ -4760,3 +4760,109 @@ body {
     flex: 0 0 auto;
   }
 }
+
+/* PDF reader polish and resilient small-screen controls. */
+.pdf-toolbar {
+  gap: 10px;
+  padding: 7px 12px;
+  border-bottom: 1px solid rgb(255 255 255 / 0.08);
+  box-shadow: 0 4px 14px rgb(13 20 15 / 0.16);
+}
+
+.pdf-toolbar .page-controls,
+.pdf-toolbar .zoom-controls {
+  border-color: rgb(255 255 255 / 0.11);
+  background: rgb(9 16 11 / 0.28);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.04);
+}
+
+.pdf-toolbar .icon-button {
+  border: 1px solid transparent;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease;
+}
+
+.pdf-toolbar .icon-button:hover:not(:disabled),
+.pdf-toolbar .icon-button:focus-visible {
+  border-color: rgb(190 215 195 / 0.28);
+  background: rgb(255 255 255 / 0.11);
+  color: #fff;
+}
+
+.pdf-toolbar .icon-button:disabled {
+  cursor: not-allowed;
+}
+
+.pdf-toolbar input[type="number"]::-webkit-inner-spin-button,
+.pdf-toolbar input[type="number"]::-webkit-outer-spin-button {
+  margin: 0;
+  appearance: none;
+}
+
+.pdf-toolbar .page-controls input:focus,
+.pdf-toolbar .zoom-value:focus {
+  border-color: #9ab39d;
+  box-shadow: 0 0 0 3px rgb(154 179 157 / 0.2);
+  outline: 0;
+}
+
+.pdf-stage {
+  overscroll-behavior: contain;
+  scrollbar-color: #9da59d transparent;
+  scrollbar-width: thin;
+}
+
+.pdf-pages {
+  padding: 2px 0 28px;
+}
+
+.pdf-page-shell {
+  scroll-margin-block-start: 14px;
+}
+
+.pdf-page-surface {
+  transition:
+    box-shadow 180ms ease,
+    outline-color 180ms ease,
+    transform 180ms ease;
+}
+
+.pdf-page-shell.current .pdf-page-surface {
+  outline-color: rgb(74 117 83 / 0.64);
+}
+
+.pdf-file-tabs button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+@media (hover: none) {
+  .pdf-page-number {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+@media (max-width: 820px) {
+  .pdf-toolbar {
+    gap: 7px;
+    padding-inline: 8px;
+  }
+
+  .pdf-toolbar .page-controls,
+  .pdf-toolbar .zoom-controls {
+    padding-inline: 2px;
+  }
+
+  .pdf-toolbar .icon-button {
+    width: 32px;
+    height: 32px;
+  }
+
+  .pdf-toolbar .toolbar-mode-button {
+    min-height: 29px;
+    padding-inline: 6px;
+  }
+}

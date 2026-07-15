@@ -188,6 +188,10 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
       ),
     [files],
   );
+  const verifiedFiles = useMemo(
+    () => orderedFiles.filter((file) => file.uploadState === "verified"),
+    [orderedFiles],
+  );
   const visibleLibraryPapers = useMemo(() => {
     const normalizedQuery = libraryQuery.trim().toLocaleLowerCase("ja-JP");
     if (!normalizedQuery) return libraryPapers.data?.items ?? [];
@@ -256,14 +260,10 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
     return () => document.body.classList.remove("citera-focus-mode");
   }, [focusMode]);
   useEffect(() => {
-    if (!selectedFileId || !files.some((file) => file.id === selectedFileId)) {
-      setSelectedFileId(
-        orderedFiles.find((file) => file.uploadState === "verified")?.id ??
-          orderedFiles[0]?.id ??
-          null,
-      );
+    if (!selectedFileId || !verifiedFiles.some((file) => file.id === selectedFileId)) {
+      setSelectedFileId(verifiedFiles[0]?.id ?? null);
     }
-  }, [files, orderedFiles, selectedFileId]);
+  }, [selectedFileId, verifiedFiles]);
 
   if (paper.isLoading) {
     return (
@@ -292,9 +292,8 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
 
   const data = paper.data;
   const pdf =
-    files.find((file) => file.id === selectedFileId) ??
-    orderedFiles.find((file) => file.uploadState === "verified") ??
-    orderedFiles[0];
+    files.find((file) => file.id === selectedFileId && file.uploadState === "verified") ??
+    verifiedFiles[0];
   const doi = data.identifiers.find(
     (identifier) => (identifier.identifierType ?? identifier.type) === "doi",
   )?.normalizedValue;
@@ -523,10 +522,13 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
                 key={file.id}
                 type="button"
                 className={file.id === pdf?.id ? "active" : ""}
+                disabled={file.uploadState !== "verified"}
                 onClick={() => setSelectedFileId(file.id)}
               >
                 {file.label ?? file.originalName}
                 {file.isDefault ? " ★" : ""}
+                {file.uploadState !== "verified" &&
+                  (file.uploadState === "failed" ? "（読み込み失敗）" : "（準備中）")}
               </button>
             ))}
             {pdf && !pdf.isDefault && (
@@ -542,7 +544,7 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
                 このPDFを既定にする
               </button>
             )}
-            {orderedFiles.length > 1 && (
+            {verifiedFiles.length > 1 && (
               <button
                 type="button"
                 className={comparePdfs ? "pdf-compare-toggle active" : "pdf-compare-toggle"}
@@ -582,13 +584,13 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
             role="tabpanel"
             className={mobileTab === "pdf" ? "pdf-pane mobile-active" : "pdf-pane"}
           >
-            {comparePdfs && orderedFiles.length > 1 ? (
+            {comparePdfs && verifiedFiles.length > 1 ? (
               <div
                 ref={compareViewersRef}
                 className="pdf-compare-viewers"
                 aria-label="PDF横並び表示"
               >
-                {orderedFiles.map((file) => (
+                {verifiedFiles.map((file) => (
                   <article className="pdf-compare-viewer" key={file.id}>
                     <header className="pdf-compare-viewer-header">
                       <strong>{file.label ?? file.originalName}</strong>

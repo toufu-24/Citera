@@ -17,7 +17,7 @@ import {
   RotateCcw,
   RotateCw,
 } from "lucide-react";
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject, type WheelEvent } from "react";
 
 import { api, shouldSendCredentials } from "../lib/api";
 
@@ -53,7 +53,6 @@ const MAX_SCALE = 4;
 const VIEW_MODE_STORAGE_KEY = "citera.pdf.view-mode";
 const SCALE_STORAGE_KEY = "citera.pdf.scale";
 const VIRTUAL_PAGE_RADIUS = 3;
-const PAGE_LABEL_HEIGHT = 0;
 const PDFJS_CMAP_URL = "/pdfjs/cmaps/";
 const PDFJS_STANDARD_FONT_URL = "/pdfjs/standard_fonts/";
 
@@ -111,6 +110,31 @@ function pageScale(
   return viewMode === "custom"
     ? Math.min(MAX_SCALE, Math.max(MIN_SCALE, calculated))
     : Math.max(0.01, calculated);
+}
+
+async function readPageDimensions(
+  documentHandle: PDFDocumentProxy,
+  isCancelled: () => boolean,
+): Promise<PageDimensions[]> {
+  const dimensions: PageDimensions[] = [];
+  const batchSize = 8;
+  for (let start = 0; start < documentHandle.numPages; start += batchSize) {
+    const batch = await Promise.all(
+      Array.from(
+        { length: Math.min(batchSize, documentHandle.numPages - start) },
+        async (_, index) => {
+          const pageNumber = start + index + 1;
+          const pdfPage = await documentHandle.getPage(pageNumber);
+          const viewport = pdfPage.getViewport({ scale: 1, rotation: 0 });
+          pdfPage.cleanup();
+          return { pageNumber, width: viewport.width, height: viewport.height };
+        },
+      ),
+    );
+    dimensions.push(...batch);
+    if (isCancelled()) return [];
+  }
+  return dimensions;
 }
 
 function PdfPageCanvas({
@@ -215,6 +239,8 @@ export function PdfViewer({
   const stageRef = useRef<HTMLDivElement>(null);
   const pageElementsRef = useRef(new Map<number, HTMLElement>());
   const intersectionAreasRef = useRef(new Map<number, number>());
+  const documentHandleRef = useRef<PDFDocumentProxy | null>(null);
+  const scrollFrameRef = useRef<number | null>(null);
   const currentPageRef = useRef(controlledPage ?? 1);
   const lastControlledPageRef = useRef(controlledPage);
   const [url, setUrl] = useState<string | null>(null);
@@ -297,9 +323,15 @@ export function PdfViewer({
     setPage(controlledPage ?? 1);
     setPageCount(0);
     setDocumentHandle(null);
+    documentHandleRef.current = null;
     setPageDimensions([]);
     setUrl(null);
     setError(null);
+    setRotation(0);
+    setEditingPage(false);
+    setEditingZoom(false);
+    pageElementsRef.current.clear();
+    intersectionAreasRef.current.clear();
     if (!fileId) return;
 
     let cancelled = false;
@@ -326,18 +358,26 @@ export function PdfViewer({
           await pdf.destroy();
           return;
         }
+        documentHandleRef.current = pdf;
         setDocumentHandle(pdf);
         setPageCount(pdf.numPages);
       })
-      .catch(() => {
-        if (!cancelled) {
+      .catch((loadError: unknown) => {
+        const isCancelled = loadError instanceof Error && loadError.name === "AbortException";
+        if (!cancelled && !isCancelled) {
           setError("PDF を読み込めませんでした。署名 URL を更新して再試行してください。");
         }
       });
 
     return () => {
       cancelled = true;
-      if (loadingTask) void loadingTask.destroy();
+      const loadedDocument = documentHandleRef.current;
+      documentHandleRef.current = null;
+      if (loadedDocument) {
+        void loadedDocument.destroy().catch(() => undefined);
+      } else if (loadingTask) {
+        void loadingTask.destroy().catch(() => undefined);
+      }
     };
   }, [fileId, loadAttempt]);
 
@@ -346,10 +386,7 @@ export function PdfViewer({
   }, [page, pageCount]);
 
   const availableWidth = Math.max(1, stageMetrics.width - stageMetrics.paddingX);
-  const availableHeight = Math.max(
-    1,
-    stageMetrics.height - stageMetrics.paddingY - PAGE_LABEL_HEIGHT,
-  );
+  const availableHeight = Math.max(1, stageMetrics.height - stageMetrics.paddingY);
   const currentDimensions = pageDimensions[page - 1] ?? pageDimensions[0];
   const effectiveScale = currentDimensions
     ? pageScale(currentDimensions, rotation, viewMode, customScale, availableWidth, availableHeight)
@@ -360,14 +397,7 @@ export function PdfViewer({
   useEffect(() => {
     if (!documentHandle) return;
     let cancelled = false;
-    void Promise.all(
-      Array.from({ length: documentHandle.numPages }, async (_, index) => {
-        const pageNumber = index + 1;
-        const pdfPage = await documentHandle.getPage(pageNumber);
-        const viewport = pdfPage.getViewport({ scale: 1, rotation: 0 });
-        return { pageNumber, width: viewport.width, height: viewport.height };
-      }),
-    )
+    void readPageDimensions(documentHandle, () => cancelled)
       .then((dimensions) => {
         if (!cancelled) setPageDimensions(dimensions);
       })
@@ -400,7 +430,9 @@ export function PdfViewer({
             largestArea = area;
           }
         }
-        if (mostVisiblePage > 0) setPage(mostVisiblePage);
+        if (mostVisiblePage > 0) {
+          setPage((current) => (current === mostVisiblePage ? current : mostVisiblePage));
+        }
       },
       { root: stage, threshold: [0, 0.1, 0.25, 0.5, 0.75, 1] },
     );
@@ -427,33 +459,44 @@ export function PdfViewer({
   }
 
   function updatePageFromScroll() {
-    const stage = stageRef.current;
-    if (!stage) return;
-    const stageRect = stage.getBoundingClientRect();
-    let mostVisiblePage = currentPageRef.current;
-    let largestArea = 0;
+    if (scrollFrameRef.current !== null) return;
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      const stage = stageRef.current;
+      if (!stage) return;
+      const stageRect = stage.getBoundingClientRect();
+      let mostVisiblePage = currentPageRef.current;
+      let largestArea = 0;
 
-    for (const [pageNumber, element] of pageElementsRef.current) {
-      const rect = element.getBoundingClientRect();
-      const visibleWidth = Math.max(
-        0,
-        Math.min(rect.right, stageRect.right) - Math.max(rect.left, stageRect.left),
-      );
-      const visibleHeight = Math.max(
-        0,
-        Math.min(rect.bottom, stageRect.bottom) - Math.max(rect.top, stageRect.top),
-      );
-      const area = visibleWidth * visibleHeight;
-      if (area > largestArea) {
-        mostVisiblePage = pageNumber;
-        largestArea = area;
+      for (const [pageNumber, element] of pageElementsRef.current) {
+        const rect = element.getBoundingClientRect();
+        const visibleWidth = Math.max(
+          0,
+          Math.min(rect.right, stageRect.right) - Math.max(rect.left, stageRect.left),
+        );
+        const visibleHeight = Math.max(
+          0,
+          Math.min(rect.bottom, stageRect.bottom) - Math.max(rect.top, stageRect.top),
+        );
+        const area = visibleWidth * visibleHeight;
+        if (area > largestArea) {
+          mostVisiblePage = pageNumber;
+          largestArea = area;
+        }
       }
-    }
 
-    if (mostVisiblePage !== currentPageRef.current) setPage(mostVisiblePage);
+      if (mostVisiblePage !== currentPageRef.current) setPage(mostVisiblePage);
+    });
   }
 
-  function handleZoomWheel(event: React.WheelEvent<HTMLDivElement>) {
+  useEffect(
+    () => () => {
+      if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
+    },
+    [],
+  );
+
+  function handleZoomWheel(event: WheelEvent<HTMLDivElement>) {
     if (!event.ctrlKey && !event.metaKey) return;
     event.preventDefault();
     const factor = event.deltaY < 0 ? 1.1 : 0.9;
@@ -474,6 +517,8 @@ export function PdfViewer({
       const target = event.target as HTMLElement | null;
       const isFormField = target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
       if (isFormField) return;
+
+      if (!viewerRef.current?.contains(document.activeElement)) return;
 
       const stageFocused = Boolean(
         stageRef.current &&
@@ -530,8 +575,9 @@ export function PdfViewer({
   }
 
   function commitZoom() {
-    const parsed = Number(zoomDraft) / 100;
-    if (Number.isFinite(parsed)) {
+    const draft = zoomDraft.trim();
+    const parsed = Number(draft) / 100;
+    if (draft && Number.isFinite(parsed)) {
       preservePageAfterLayoutChange(() => {
         setCustomScale(Math.min(MAX_SCALE, Math.max(MIN_SCALE, parsed)));
         setViewMode("custom");
@@ -541,8 +587,9 @@ export function PdfViewer({
   }
 
   function commitPage() {
-    const parsed = Number.parseInt(pageDraft, 10);
-    if (Number.isFinite(parsed)) {
+    const draft = pageDraft.trim();
+    const parsed = Number.parseInt(draft, 10);
+    if (draft && Number.isFinite(parsed)) {
       scrollToPage(parsed);
     }
     setEditingPage(false);
@@ -587,7 +634,7 @@ export function PdfViewer({
       aria-label={`${title} の PDF`}
       aria-busy={!documentHandle && !error}
     >
-      <div className="pdf-toolbar">
+      <div className="pdf-toolbar" role="toolbar" aria-label="PDF操作">
         <div className="page-controls" aria-label="ページ移動">
           <button
             type="button"
@@ -615,6 +662,9 @@ export function PdfViewer({
                 if (event.key === "Enter") {
                   event.preventDefault();
                   commitPage();
+                } else if (event.key === "Escape") {
+                  event.preventDefault();
+                  setEditingPage(false);
                 }
               }}
               aria-label="ページ番号"
@@ -661,6 +711,9 @@ export function PdfViewer({
               if (event.key === "Enter") {
                 event.preventDefault();
                 commitZoom();
+              } else if (event.key === "Escape") {
+                event.preventDefault();
+                setEditingZoom(false);
               }
             }}
             aria-label="倍率（％）"
@@ -719,6 +772,17 @@ export function PdfViewer({
           >
             <RotateCw size={17} />
           </button>
+          <button
+            type="button"
+            className="icon-button"
+            onClick={() =>
+              preservePageAfterLayoutChange(() => setRotation((value) => (value + 270) % 360))
+            }
+            aria-label="90度左回転"
+            title="90度左回転"
+          >
+            <RotateCcw size={17} />
+          </button>
           {onToggleInspector && (
             <button
               type="button"
@@ -757,6 +821,7 @@ export function PdfViewer({
         className="pdf-stage"
         tabIndex={0}
         aria-label="PDF表示領域"
+        onPointerDown={() => stageRef.current?.focus()}
         onScroll={updatePageFromScroll}
         onWheel={handleZoomWheel}
       >
@@ -801,6 +866,7 @@ export function PdfViewer({
                   className={`pdf-page-shell ${dimensions.pageNumber === page ? "current" : ""}`}
                   data-page-number={dimensions.pageNumber}
                   aria-label={`ページ ${dimensions.pageNumber} / ${pageCount}`}
+                  aria-current={dimensions.pageNumber === page ? "page" : undefined}
                   style={{ width: displayWidth }}
                 >
                   <span className="sr-only">ページ {dimensions.pageNumber} の始まり</span>
