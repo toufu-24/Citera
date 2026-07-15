@@ -53,9 +53,7 @@ export function AppShell() {
       <main className="app-content">
         <header className="app-header">
           <Link to="/library" className="brand" aria-label="Citera ホーム">
-            <span className="brand-mark" aria-hidden="true">
-              C
-            </span>
+            <img className="brand-mark" src="/favicon.svg" alt="" aria-hidden="true" />
             <span className="brand-word">Citera</span>
           </Link>
           <div className="app-header-actions">

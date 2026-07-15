@@ -54,6 +54,8 @@ const VIEW_MODE_STORAGE_KEY = "citera.pdf.view-mode";
 const SCALE_STORAGE_KEY = "citera.pdf.scale";
 const VIRTUAL_PAGE_RADIUS = 3;
 const PAGE_LABEL_HEIGHT = 0;
+const PDFJS_CMAP_URL = "/pdfjs/cmaps/";
+const PDFJS_STANDARD_FONT_URL = "/pdfjs/standard_fonts/";
 
 function readStoredMode(): PdfViewMode {
   try {
@@ -314,6 +316,10 @@ export function PdfViewer({
           url: nextUrl,
           httpHeaders: headers,
           withCredentials: shouldSendCredentials(nextUrl),
+          cMapUrl: PDFJS_CMAP_URL,
+          cMapPacked: true,
+          standardFontDataUrl: PDFJS_STANDARD_FONT_URL,
+          useSystemFonts: true,
         });
         const pdf = await loadingTask.promise;
         if (cancelled) {

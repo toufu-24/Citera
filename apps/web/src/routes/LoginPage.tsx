@@ -27,7 +27,7 @@ export function LoginPage() {
       <section className="login-story">
         <div>
           <a className="brand login-brand" href="/">
-            <span className="brand-mark">C</span>
+            <img className="brand-mark" src="/favicon.svg" alt="" aria-hidden="true" />
             <span className="brand-word">Citera</span>
           </a>
           <p className="eyebrow light">YOUR RESEARCH, REMEMBERED</p>
