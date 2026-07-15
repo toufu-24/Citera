@@ -8,7 +8,7 @@
     "./app": "./src/app.ts"
   },
   "scripts": {
-    "build": "wrangler deploy --dry-run --env=\"\" --outdir dist",
+    "build": "wrangler deploy --dry-run --env=\"\" --outdir dist --config wrangler.build.jsonc",
     "dev": "wrangler dev --env=\"\" --config ../../wrangler.jsonc",
     "deploy": "wrangler deploy --config ../../wrangler.jsonc",
     "lint": "eslint src --max-warnings 0",
