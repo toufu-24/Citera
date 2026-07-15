@@ -1,14 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useLocation, useNavigate } from "@tanstack/react-router";
-import {
-  BookOpen,
-  ChevronDown,
-  Cloud,
-  LogOut,
-  PanelLeftClose,
-  Settings,
-  WifiOff,
-} from "lucide-react";
+import { Cloud, LogOut, WifiOff } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { api, ApiRequestError } from "../lib/api";
@@ -16,7 +8,6 @@ import { clearActiveDatabase } from "../lib/database";
 import { installSyncTriggers, type SyncStatus } from "../lib/sync";
 
 export function AppShell() {
-  const [collapsed, setCollapsed] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>(
     navigator.onLine ? "syncing" : "offline",
   );
@@ -58,75 +49,46 @@ export function AppShell() {
   }
 
   return (
-    <div className={collapsed ? "app-shell is-collapsed" : "app-shell"}>
-      <aside className="sidebar" aria-label="メインナビゲーション">
-        <div className="brand-row">
+    <div className="app-shell">
+      <main className="app-content">
+        <header className="app-header">
           <Link to="/library" className="brand" aria-label="Citera ホーム">
             <span className="brand-mark" aria-hidden="true">
               C
             </span>
             <span className="brand-word">Citera</span>
           </Link>
-          <button
-            className="icon-button sidebar-collapse"
-            onClick={() => setCollapsed((value) => !value)}
-            aria-label={collapsed ? "サイドバーを開く" : "サイドバーを閉じる"}
-          >
-            <PanelLeftClose size={18} />
-          </button>
-        </div>
-
-        <nav className="sidebar-nav">
-          <Link to="/library" activeProps={{ className: "active" }}>
-            <BookOpen size={19} />
-            <span>ライブラリ</span>
-          </Link>
-          <Link to="/settings" activeProps={{ className: "active" }}>
-            <Settings size={19} />
-            <span>設定</span>
-          </Link>
-        </nav>
-
-        <div className="sidebar-spacer" />
-        <div className={`sync-status is-${syncStatus}`}>
-          {syncStatus === "offline" ? <WifiOff size={16} /> : <Cloud size={16} />}
-          <span>
-            {syncStatus === "syncing"
-              ? "同期中"
-              : syncStatus === "synced"
-                ? "同期済み"
-                : syncStatus === "error"
-                  ? "同期に失敗"
-                  : "オフライン"}
-          </span>
-          {syncStatus === "synced" && <span className="status-dot" />}
-        </div>
-        <div className="account-card">
-          <div className="avatar">
-            {session.data?.user.displayName.slice(0, 1).toUpperCase() ?? "C"}
+          <div className="app-header-actions">
+            <div className={`sync-status is-${syncStatus}`} aria-label="同期状態">
+              {syncStatus === "offline" ? <WifiOff size={16} /> : <Cloud size={16} />}
+              <span>
+                {syncStatus === "syncing"
+                  ? "同期中"
+                  : syncStatus === "synced"
+                    ? "同期済み"
+                    : syncStatus === "error"
+                      ? "同期に失敗"
+                      : "オフライン"}
+              </span>
+              {syncStatus === "synced" && <span className="status-dot" />}
+            </div>
+            <Link to="/settings" className="account-trigger" aria-label="アカウント設定を開く">
+              <span className="avatar small">
+                {session.data?.user.displayName.slice(0, 1).toUpperCase() ?? "C"}
+              </span>
+              <span className="account-copy">
+                <strong>{session.data?.user.displayName ?? "読み込み中"}</strong>
+                <span>{session.data?.user.email ?? ""}</span>
+              </span>
+            </Link>
+            <button
+              className="icon-button header-logout"
+              onClick={() => void logout()}
+              aria-label="ログアウト"
+            >
+              <LogOut size={17} />
+            </button>
           </div>
-          <div className="account-copy">
-            <strong>{session.data?.user.displayName ?? "読み込み中"}</strong>
-            <span>{session.data?.user.email ?? ""}</span>
-          </div>
-          <button className="icon-button" onClick={() => void logout()} aria-label="ログアウト">
-            <LogOut size={17} />
-          </button>
-        </div>
-      </aside>
-
-      <main className="app-content">
-        <header className="mobile-header">
-          <Link to="/library" className="brand">
-            <span className="brand-mark">C</span>
-            <span className="brand-word">Citera</span>
-          </Link>
-          <Link to="/settings" className="account-trigger" aria-label="設定を開く">
-            <span className="avatar small">
-              {session.data?.user.displayName.slice(0, 1) ?? "C"}
-            </span>
-            <ChevronDown size={16} />
-          </Link>
         </header>
         <Outlet />
       </main>

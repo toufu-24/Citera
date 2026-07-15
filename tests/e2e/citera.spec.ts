@@ -49,6 +49,10 @@ test("owner can add, upload, read, annotate, search, and export a paper", async 
   await page.goto("/login");
   await page.getByRole("button", { name: "ローカル開発用アカウントで続ける" }).click();
   await expect(page.getByRole("heading", { name: "ライブラリ" })).toBeVisible();
+  await page.getByRole("link", { name: "アカウント設定を開く" }).click();
+  await expect(page.getByRole("heading", { name: "設定" })).toBeVisible();
+  await page.goto("/library");
+  await expect(page.getByRole("heading", { name: "ライブラリ" })).toBeVisible();
 
   await page.getByRole("button", { name: "論文を追加" }).first().click();
   const dialog = page.getByRole("dialog");
