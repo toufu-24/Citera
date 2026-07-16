@@ -97,9 +97,31 @@ const createPaperSchema = paperFieldsSchema.extend({
   clientMutationId: z.string().min(1).max(200).optional(),
 });
 
-const patchPaperSchema = paperFieldsSchema
-  .partial()
-  .extend({
+// Zod's partial() intentionally preserves defaults. Using it directly on the
+// create schema would materialize omitted fields and silently reset an existing
+// paper while changing an unrelated field such as rating or summary.
+const patchPaperSchema = z
+  .object({
+    title: z.string().trim().min(1).max(10_000).optional(),
+    abstract: nullableText(1_000_000),
+    summary: nullableText(240),
+    publicationYear: z.number().int().min(1000).max(9999).nullable().optional(),
+    publicationDate: z.string().date().nullable().optional(),
+    venue: nullableText(2_000),
+    volume: nullableText(100),
+    issue: nullableText(100),
+    pages: nullableText(100),
+    publisher: nullableText(2_000),
+    language: nullableText(35),
+    paperType: PaperTypeSchema.optional(),
+    status: PaperStatusSchema.optional(),
+    readingStatus: readingStatusSchema.optional(),
+    priority: z.number().int().min(0).max(5).optional(),
+    rating: z.number().int().min(1).max(5).nullable().optional(),
+    readProgress: z.number().min(0).max(100).optional(),
+    sourceUrl: HttpUrlSchema.nullable().optional(),
+    metadataState: MetadataStateSchema.optional(),
+    noteMarkdown: z.string().max(1_000_000).nullable().optional(),
     identifiers: z.array(identifierInputSchema).max(30).optional(),
     authors: z.array(authorInputSchema).max(200).optional(),
   })

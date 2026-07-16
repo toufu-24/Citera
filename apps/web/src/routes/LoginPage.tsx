@@ -49,7 +49,7 @@ export function LoginPage() {
             <Check size={17} /> DOI・arXiv から自動取得
           </li>
           <li>
-            <Check size={17} /> キャッシュ済みの文献をオフライン閲覧
+            <Check size={17} /> 保存済みの書誌情報をオフラインでも確認
           </li>
         </ul>
         <p className="login-quote">
@@ -92,9 +92,7 @@ export function LoginPage() {
             </span>
           </div>
         </div>
-        <p className="login-footer">
-          ログインすると、利用規約とプライバシーポリシーに同意したものとみなされます。
-        </p>
+        <p className="login-footer">Citera — 研究資料を、いつでも手の届く場所に。</p>
       </section>
     </main>
   );

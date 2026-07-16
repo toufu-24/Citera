@@ -44,6 +44,8 @@ const filePatchSchema = z
   .strict()
   .refine((value) => Object.keys(value).length > 0, "At least one file field is required");
 
+const FILE_RESTORE_WINDOW_MS = 30 * 24 * 60 * 60 * 1_000;
+
 const ingestionPaperSchema = z.object({
   title: z.string().trim().min(1).max(10_000),
   abstract: z.string().max(1_000_000).nullable().optional(),
@@ -150,7 +152,9 @@ function fileResponse(file: FileRow): Record<string, unknown> {
     originalName: file.original_name,
     kind: file.kind,
     fileKind,
-    label: file.label ?? `${kindLabels[fileKind] ?? "PDF"}${file.language_code ? `（${languageLabels[file.language_code] ?? file.language_code}）` : ""}`,
+    label:
+      file.label ??
+      `${kindLabels[fileKind] ?? "PDF"}${file.language_code ? `（${languageLabels[file.language_code] ?? file.language_code}）` : ""}`,
     languageCode: file.language_code,
     isDefault: file.is_default === 1,
     sortOrder: file.sort_order,
@@ -415,7 +419,8 @@ ingestionsRoutes.post("/", async (c) => {
       if (uniqueIds.length) {
         const owned = await first<{ count: number } & Record<string, unknown>>(
           c.env.DB,
-          `SELECT COUNT(*) AS count FROM ${table} WHERE user_id=? AND id IN (${uniqueIds.map(() => "?").join(",")}) ${table === "collections" ? "AND deleted_at IS NULL" : ""
+          `SELECT COUNT(*) AS count FROM ${table} WHERE user_id=? AND id IN (${uniqueIds.map(() => "?").join(",")}) ${
+            table === "collections" ? "AND deleted_at IS NULL" : ""
           }`,
           userId,
           ...uniqueIds,
@@ -617,10 +622,10 @@ ingestionsRoutes.post("/:ingestionId/complete", async (c) => {
   if (row.state === "complete") {
     const jobs = row.paper_id
       ? await ingestionMaintenanceJobs(c.env.DB, {
-        userId,
-        paperId: row.paper_id,
-        ingestionId: row.id,
-      })
+          userId,
+          paperId: row.paper_id,
+          ingestionId: row.id,
+        })
       : [];
     if (jobs.length) {
       await c.env.DB.batch(jobs.map((job) => jobOutboxStatement(c.env.DB, job)));
@@ -650,10 +655,10 @@ ingestionsRoutes.post("/:ingestionId/complete", async (c) => {
   };
   const jobs = row.paper_id
     ? await ingestionMaintenanceJobs(c.env.DB, {
-      userId,
-      paperId: row.paper_id,
-      ingestionId: row.id,
-    })
+        userId,
+        paperId: row.paper_id,
+        ingestionId: row.id,
+      })
     : [];
   await c.env.DB.batch([
     c.env.DB.prepare(
@@ -673,10 +678,10 @@ ingestionsRoutes.post("/:ingestionId/retry", async (c) => {
   const now = nowUtcIso();
   const jobs = row.paper_id
     ? await ingestionMaintenanceJobs(c.env.DB, {
-      userId,
-      paperId: row.paper_id,
-      ingestionId: row.id,
-    })
+        userId,
+        paperId: row.paper_id,
+        ingestionId: row.id,
+      })
     : [];
   await c.env.DB.batch([
     c.env.DB.prepare(
@@ -720,7 +725,7 @@ const createUploadTicket = async (c: Context<AppBindings>): Promise<Response> =>
   const storage = await first<{ bytes: number } & Record<string, unknown>>(
     c.env.DB,
     `SELECT COALESCE(SUM(size_bytes),0) AS bytes FROM files
-     WHERE user_id=? AND deleted_at IS NULL AND upload_state IN ('pending','uploaded','verified')`,
+     WHERE user_id=? AND upload_state IN ('pending','uploaded','verified')`,
     userId,
   );
   if (Number(storage?.bytes ?? 0) + input.sizeBytes > storageLimit) {
@@ -758,13 +763,15 @@ const createUploadTicket = async (c: Context<AppBindings>): Promise<Response> =>
     return c.json({ file: fileResponse(duplicate), upload: null, duplicate: true });
   }
   const fileId = duplicate?.id ?? createId("fil");
-  const r2Key = duplicate?.r2_key ?? objectKeyFor({
-    userId,
-    paperId,
-    fileId,
-    kind: storageKind,
-    extension: "pdf",
-  });
+  const r2Key =
+    duplicate?.r2_key ??
+    objectKeyFor({
+      userId,
+      paperId,
+      fileId,
+      kind: storageKind,
+      extension: "pdf",
+    });
   const now = nowUtcIso();
   if (input.isDefault) {
     await c.env.DB.prepare("UPDATE files SET is_default=0 WHERE paper_id=? AND deleted_at IS NULL")
@@ -824,20 +831,26 @@ const createUploadTicket = async (c: Context<AppBindings>): Promise<Response> =>
   const upload =
     c.env.ENVIRONMENT === "production"
       ? await presignR2(c.env, {
-        key: r2Key,
-        method: "PUT",
-        contentType: input.mediaType,
-        contentLength: input.sizeBytes,
-        sha256: input.sha256,
-        expiresIn: ttl,
-      })
+          key: r2Key,
+          method: "PUT",
+          contentType: input.mediaType,
+          contentLength: input.sizeBytes,
+          sha256: input.sha256,
+          expiresIn: ttl,
+        })
       : {
-        url: new URL(`${c.req.path.startsWith("/api/v1") ? "/api/v1" : "/v1"}/files/${fileId}/content`, c.env.APP_ORIGIN).toString(),
-        headers: { "Content-Type": input.mediaType, "If-None-Match": "*" },
-        expiresIn: ttl,
-      };
+          url: new URL(
+            `${c.req.path.startsWith("/api/v1") ? "/api/v1" : "/v1"}/files/${fileId}/content`,
+            c.env.APP_ORIGIN,
+          ).toString(),
+          headers: { "Content-Type": input.mediaType, "If-None-Match": "*" },
+          expiresIn: ttl,
+        };
   const file = await requireFile(c.env.DB, userId, fileId);
-  return c.json({ file: fileResponse(file), upload, duplicate: Boolean(duplicate) }, duplicate ? 200 : 201);
+  return c.json(
+    { file: fileResponse(file), upload, duplicate: Boolean(duplicate) },
+    duplicate ? 200 : 201,
+  );
 };
 
 filesRoutes.post("/papers/:paperId/files/upload-url", createUploadTicket);
@@ -1043,10 +1056,13 @@ filesRoutes.get("/files/:fileId/download-url", async (c) => {
     c.env.ENVIRONMENT === "production"
       ? await presignR2(c.env, { key: file.r2_key, method: "GET", expiresIn: ttl })
       : {
-        url: new URL(`${c.req.path.startsWith("/api/v1") ? "/api/v1" : "/v1"}/files/${file.id}/content`, c.env.APP_ORIGIN).toString(),
-        headers: {},
-        expiresIn: ttl,
-      };
+          url: new URL(
+            `${c.req.path.startsWith("/api/v1") ? "/api/v1" : "/v1"}/files/${file.id}/content`,
+            c.env.APP_ORIGIN,
+          ).toString(),
+          headers: {},
+          expiresIn: ttl,
+        };
   return c.json({ ...download, fileName: file.original_name, mediaType: file.media_type });
 });
 
@@ -1060,10 +1076,13 @@ filesRoutes.get("/files/:fileId/download-ticket", async (c) => {
     c.env.ENVIRONMENT === "production"
       ? await presignR2(c.env, { key: file.r2_key, method: "GET", expiresIn: ttl })
       : {
-        url: new URL(`${c.req.path.startsWith("/api/v1") ? "/api/v1" : "/v1"}/files/${file.id}/content`, c.env.APP_ORIGIN).toString(),
-        headers: {},
-        expiresIn: ttl,
-      };
+          url: new URL(
+            `${c.req.path.startsWith("/api/v1") ? "/api/v1" : "/v1"}/files/${file.id}/content`,
+            c.env.APP_ORIGIN,
+          ).toString(),
+          headers: {},
+          expiresIn: ttl,
+        };
   return c.json({ ...download, fileName: file.original_name, mediaType: file.media_type });
 });
 
@@ -1072,18 +1091,17 @@ filesRoutes.patch("/files/:fileId", async (c) => {
   const userId = c.get("user").id;
   const file = await requireFile(c.env.DB, userId, c.req.param("fileId"));
   if (file.deleted_at) throw new ApiError(404, "FILE_NOT_FOUND", "File was not found.");
-  const fileKind = input.fileKind ?? file.file_kind ?? (file.kind === "supplement" ? "supplement" : "fulltext");
+  const fileKind =
+    input.fileKind ?? file.file_kind ?? (file.kind === "supplement" ? "supplement" : "fulltext");
   const storageKind = fileKind === "supplement" ? "supplement" : "original_pdf";
   const isDefault = input.isDefault === undefined ? file.is_default : input.isDefault ? 1 : 0;
   const now = nowUtcIso();
   const statements: D1PreparedStatement[] = [];
   if (isDefault === 1) {
     statements.push(
-      c.env.DB.prepare("UPDATE files SET is_default=0 WHERE paper_id=? AND user_id=? AND id<>? AND deleted_at IS NULL").bind(
-        file.paper_id,
-        userId,
-        file.id,
-      ),
+      c.env.DB.prepare(
+        "UPDATE files SET is_default=0 WHERE paper_id=? AND user_id=? AND id<>? AND deleted_at IS NULL",
+      ).bind(file.paper_id, userId, file.id),
     );
   }
   statements.push(
@@ -1106,7 +1124,13 @@ filesRoutes.patch("/files/:fileId", async (c) => {
       entityId: file.id,
       operation: "update",
       version: 1,
-      data: { id: file.id, paperId: file.paper_id, fileKind, isDefault: Boolean(isDefault), updatedAt: now },
+      data: {
+        id: file.id,
+        paperId: file.paper_id,
+        fileKind,
+        isDefault: Boolean(isDefault),
+        updatedAt: now,
+      },
       changedAt: now,
     }),
   );
@@ -1129,18 +1153,21 @@ filesRoutes.post("/files/:fileId/retry", async (c) => {
   const upload =
     c.env.ENVIRONMENT === "production"
       ? await presignR2(c.env, {
-        key: file.r2_key,
-        method: "PUT",
-        contentType: file.media_type,
-        contentLength: file.size_bytes,
-        sha256: file.sha256,
-        expiresIn: ttl,
-      })
+          key: file.r2_key,
+          method: "PUT",
+          contentType: file.media_type,
+          contentLength: file.size_bytes,
+          sha256: file.sha256,
+          expiresIn: ttl,
+        })
       : {
-        url: new URL(`${c.req.path.startsWith("/api/v1") ? "/api/v1" : "/v1"}/files/${file.id}/content`, c.env.APP_ORIGIN).toString(),
-        headers: { "Content-Type": file.media_type, "If-None-Match": "*" },
-        expiresIn: ttl,
-      };
+          url: new URL(
+            `${c.req.path.startsWith("/api/v1") ? "/api/v1" : "/v1"}/files/${file.id}/content`,
+            c.env.APP_ORIGIN,
+          ).toString(),
+          headers: { "Content-Type": file.media_type, "If-None-Match": "*" },
+          expiresIn: ttl,
+        };
   return c.json({ file: fileResponse(await requireFile(c.env.DB, userId, file.id)), upload }, 202);
 });
 
@@ -1178,6 +1205,16 @@ filesRoutes.delete("/files/:fileId", async (c) => {
   const file = await requireFile(c.env.DB, userId, c.req.param("fileId"));
   if (file.deleted_at) return c.body(null, 204);
   const now = nowUtcIso();
+  const cleanupAt = new Date(Date.now() + FILE_RESTORE_WINDOW_MS).toISOString();
+  const cleanupJob: JobMessage = {
+    jobId: createId("job"),
+    type: "object.cleanup",
+    userId,
+    paperId: file.paper_id,
+    fileId: file.id,
+    sourceVersion: Date.now(),
+    attempt: 1,
+  };
   await c.env.DB.batch([
     c.env.DB.prepare("UPDATE files SET deleted_at=? WHERE id=? AND user_id=?").bind(
       now,
@@ -1193,6 +1230,7 @@ filesRoutes.delete("/files/:fileId", async (c) => {
       data: { id: file.id, paperId: file.paper_id, deletedAt: now },
       changedAt: now,
     }),
+    jobOutboxStatement(c.env.DB, cleanupJob, now, cleanupAt),
   ]);
   if (file.is_default === 1) {
     const replacement = await first<{ id: string } & Record<string, unknown>>(
@@ -1217,25 +1255,39 @@ filesRoutes.post("/files/:fileId/restore", async (c) => {
   const userId = c.get("user").id;
   const file = await requireFile(c.env.DB, userId, c.req.param("fileId"));
   if (!file.deleted_at) return c.json(fileResponse(file));
+  if (
+    file.upload_state === "failed" ||
+    new Date(file.deleted_at).getTime() < Date.now() - FILE_RESTORE_WINDOW_MS
+  ) {
+    throw new ApiError(410, "FILE_RESTORE_WINDOW_EXPIRED", "The file restore window has expired.");
+  }
   const now = nowUtcIso();
   const activeDefault = await first<{ id: string } & Record<string, unknown>>(
     c.env.DB,
-    "SELECT id FROM files WHERE paper_id=? AND is_default=1 AND deleted_at IS NULL LIMIT 1",
+    "SELECT id FROM files WHERE paper_id=? AND user_id=? AND is_default=1 AND deleted_at IS NULL LIMIT 1",
     file.paper_id,
-  );
-  await c.env.DB.prepare(
-    "UPDATE files SET deleted_at=NULL,is_default=? WHERE id=? AND user_id=?",
-  )
-    .bind(activeDefault ? 0 : 1, file.id, userId)
-    .run();
-  await changeStatement(c.env.DB, {
     userId,
-    entityType: "file",
-    entityId: file.id,
-    operation: "restore",
-    version: 1,
-    data: { id: file.id, paperId: file.paper_id, restoredAt: now },
-    changedAt: now,
-  }).run();
+  );
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE files SET deleted_at=NULL,is_default=? WHERE id=? AND user_id=?").bind(
+      activeDefault ? 0 : 1,
+      file.id,
+      userId,
+    ),
+    c.env.DB.prepare(
+      `DELETE FROM job_outbox
+       WHERE state='pending' AND json_extract(job_json,'$.type')='object.cleanup'
+         AND json_extract(job_json,'$.userId')=? AND json_extract(job_json,'$.fileId')=?`,
+    ).bind(userId, file.id),
+    changeStatement(c.env.DB, {
+      userId,
+      entityType: "file",
+      entityId: file.id,
+      operation: "restore",
+      version: 1,
+      data: { id: file.id, paperId: file.paper_id, restoredAt: now },
+      changedAt: now,
+    }),
+  ]);
   return c.json(fileResponse(await requireFile(c.env.DB, userId, file.id)));
 });

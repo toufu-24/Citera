@@ -13,10 +13,12 @@ import {
   ExternalLink,
   FileText,
   FolderPlus,
+  ListTodo,
+  MapPin,
+  MessageSquarePlus,
   Pencil,
   RefreshCw,
   Save,
-  Search,
   Sparkles,
   Star,
   Tag,
@@ -28,25 +30,28 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ActionMenu } from "../components/ActionMenu";
 import { PdfUpload } from "../components/PdfUpload";
 import { PdfViewer } from "../components/PdfViewer";
-import { api, type PaperDetail } from "../lib/api";
+import { ApiRequestError, api, type NoteRecord, type PaperDetail } from "../lib/api";
 import { copyText } from "../lib/clipboard";
-
-const statusLabel: Record<PaperDetail["status"], string> = {
-  inbox: "未着手",
-  reading: "読書中",
-  read: "読了",
-  archived: "保管済み",
-};
+import { db } from "../lib/database";
 
 function formString(form: FormData, name: string): string {
   const value = form.get(name);
   return typeof value === "string" ? value : "";
 }
 
+function formatDate(value: string): string {
+  return new Intl.DateTimeFormat("ja-JP", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(value));
+}
+
 type PaperDetailViewProps = {
   paperId: string;
   drawer?: boolean;
   onClose?: () => void;
+  initialTab?: "pdf" | "details";
 };
 
 export function PaperDetailPage() {
@@ -54,11 +59,16 @@ export function PaperDetailPage() {
   return <PaperDetailView paperId={paperId} />;
 }
 
-export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetailViewProps) {
+export function PaperDetailView({
+  paperId,
+  drawer = false,
+  onClose,
+  initialTab = "details",
+}: PaperDetailViewProps) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [currentPage, setCurrentPage] = useState(1);
-  const [mobileTab, setMobileTab] = useState<"pdf" | "details">("details");
+  const [mobileTab, setMobileTab] = useState<"pdf" | "details">(initialTab);
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [focusMode, setFocusMode] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -67,16 +77,52 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
   const [tagEditorOpen, setTagEditorOpen] = useState(false);
   const [collectionEditorOpen, setCollectionEditorOpen] = useState(false);
   const [selectedFileId, setSelectedFileId] = useState<string | null>(null);
-  const [libraryQuery, setLibraryQuery] = useState("");
   const [comparePdfs, setComparePdfs] = useState(false);
   const [pdfFetchQueued, setPdfFetchQueued] = useState(false);
   const [pdfFetchJobId, setPdfFetchJobId] = useState<string | null>(null);
   const [pdfFetchError, setPdfFetchError] = useState<string | null>(null);
+  const [metadataRefreshQueued, setMetadataRefreshQueued] = useState(false);
+  const [noteDraft, setNoteDraft] = useState("");
+  const [noteType, setNoteType] = useState<"general" | "page" | "todo">("general");
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editingNoteDraft, setEditingNoteDraft] = useState("");
   const compareViewersRef = useRef<HTMLDivElement>(null);
 
   const paper = useQuery({
     queryKey: ["paper", paperId],
-    queryFn: () => api.paper(paperId),
+    queryFn: async () => {
+      try {
+        return await api.paper(paperId);
+      } catch (error) {
+        const recoverable =
+          !navigator.onLine ||
+          error instanceof TypeError ||
+          (error instanceof ApiRequestError && error.status >= 500);
+        if (!recoverable) throw error;
+        const cached = await db.papers.get(paperId);
+        if (!cached) throw error;
+        const notes = await db.notes.where("paperId").equals(paperId).toArray();
+        return {
+          ...cached,
+          abstract: null,
+          sourceUrl: null,
+          volume: null,
+          issue: null,
+          pages: null,
+          publisher: null,
+          language: null,
+          paperType: "article-journal",
+          priority: 0,
+          readProgress: 0,
+          identifiers: [],
+          collections: cached.collections ?? [],
+          notes,
+          files: [],
+          noteMarkdown: null,
+        } satisfies PaperDetail;
+      }
+    },
+    refetchInterval: metadataRefreshQueued ? 2_000 : false,
   });
   const pdfFetchStatus = useQuery({
     queryKey: ["pdf-fetch", paperId, pdfFetchJobId],
@@ -84,11 +130,6 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
     enabled: Boolean(pdfFetchJobId),
     refetchInterval: pdfFetchJobId ? 2_000 : false,
     retry: 2,
-  });
-  const libraryPapers = useQuery({
-    queryKey: ["papers", "detail-pane"],
-    queryFn: () => api.papers(new URLSearchParams({ limit: "50", sort: "updated_at:desc" })),
-    enabled: !drawer,
   });
   const duplicates = useQuery({
     queryKey: ["duplicates", paperId],
@@ -121,7 +162,10 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
 
   const refresh = useMutation({
     mutationFn: () => api.refreshMetadata(paperId),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["paper", paperId] }),
+    onSuccess: () => {
+      setMetadataRefreshQueued(true);
+      void queryClient.invalidateQueries({ queryKey: ["paper", paperId] });
+    },
   });
 
   const fetchPdf = useMutation({
@@ -178,6 +222,38 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
     },
   });
 
+  const refreshNotes = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["paper", paperId] }),
+      queryClient.invalidateQueries({ queryKey: ["papers"] }),
+    ]);
+  };
+  const createNote = useMutation({
+    mutationFn: () =>
+      api.addNote(paperId, {
+        noteType,
+        pageNumber: noteType === "page" ? currentPage : null,
+        contentMarkdown: noteDraft.trim(),
+      }),
+    onSuccess: async () => {
+      setNoteDraft("");
+      await refreshNotes();
+    },
+  });
+  const editNote = useMutation({
+    mutationFn: (note: NoteRecord) =>
+      api.updateNote(note.id, note.version, { contentMarkdown: editingNoteDraft.trim() }),
+    onSuccess: async () => {
+      setEditingNoteId(null);
+      setEditingNoteDraft("");
+      await refreshNotes();
+    },
+  });
+  const deleteNote = useMutation({
+    mutationFn: (note: NoteRecord) => api.removeNote(note.id, note.version),
+    onSuccess: refreshNotes,
+  });
+
   const files = paper.data?.files ?? [];
   const orderedFiles = useMemo(
     () =>
@@ -192,18 +268,12 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
     () => orderedFiles.filter((file) => file.uploadState === "verified"),
     [orderedFiles],
   );
-  const visibleLibraryPapers = useMemo(() => {
-    const normalizedQuery = libraryQuery.trim().toLocaleLowerCase("ja-JP");
-    if (!normalizedQuery) return libraryPapers.data?.items ?? [];
-    return (libraryPapers.data?.items ?? []).filter((item) =>
-      [item.title, item.venue, ...item.authors.map((author) => author.displayName)]
-        .filter(Boolean)
-        .some((value) => value?.toLocaleLowerCase("ja-JP").includes(normalizedQuery)),
-    );
-  }, [libraryPapers.data?.items, libraryQuery]);
   useEffect(() => {
     if (paper.data && paperNote === null) setPaperNote(paper.data.noteMarkdown ?? "");
   }, [paper.data, paperNote]);
+  useEffect(() => {
+    if (paper.data) document.title = `${paper.data.title} — Citera`;
+  }, [paper.data]);
   useEffect(() => {
     if (paper.data && summaryDraft === null) setSummaryDraft(paper.data.summary ?? "");
   }, [paper.data, summaryDraft]);
@@ -213,6 +283,16 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
       setPdfFetchJobId(null);
     }
   }, [paper.data?.files]);
+  useEffect(() => {
+    if (!metadataRefreshQueued) return;
+    if (paper.data?.metadataState === "complete" || paper.data?.metadataState === "failed") {
+      setMetadataRefreshQueued(false);
+      void queryClient.invalidateQueries({ queryKey: ["papers"] });
+      return;
+    }
+    const timeoutId = window.setTimeout(() => setMetadataRefreshQueued(false), 120_000);
+    return () => window.clearTimeout(timeoutId);
+  }, [metadataRefreshQueued, paper.data?.metadataState, queryClient]);
   useEffect(() => {
     const statusData = pdfFetchStatus.data;
     const status = statusData?.state;
@@ -249,12 +329,16 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
     setPaperNote(null);
     setSummaryDraft(null);
     setCurrentPage(1);
-    setMobileTab("details");
+    setMobileTab(initialTab);
     setComparePdfs(false);
     setPdfFetchQueued(false);
     setPdfFetchJobId(null);
     setPdfFetchError(null);
-  }, [paperId]);
+    setMetadataRefreshQueued(false);
+    setNoteDraft("");
+    setEditingNoteId(null);
+    setEditingNoteDraft("");
+  }, [initialTab, paperId]);
   useEffect(() => {
     document.body.classList.toggle("citera-focus-mode", focusMode);
     return () => document.body.classList.remove("citera-focus-mode");
@@ -363,58 +447,6 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
     <div
       className={`paper-detail-page ${drawer ? "paper-detail-drawer" : ""} view-${mobileTab} ${focusMode ? "is-focus-mode" : ""}`}
     >
-      {!drawer && (
-        <aside className="detail-library-pane" aria-label="論文一覧">
-          <header>
-            <div>
-              <p className="eyebrow">LIBRARY</p>
-              <h2>すべての論文</h2>
-            </div>
-            <span>{libraryPapers.data?.items.length ?? "—"}</span>
-          </header>
-          <label className="detail-library-search">
-            <Search size={16} />
-            <input
-              type="search"
-              value={libraryQuery}
-              onChange={(event) => setLibraryQuery(event.target.value)}
-              placeholder="論文を検索…"
-              aria-label="論文を検索"
-            />
-          </label>
-          <div className="detail-library-list">
-            {libraryPapers.isPending ? (
-              <div className="detail-library-message">論文を読み込んでいます…</div>
-            ) : visibleLibraryPapers.length ? (
-              visibleLibraryPapers.map((item) => (
-                <Link
-                  key={item.id}
-                  to="/papers/$paperId"
-                  params={{ paperId: item.id }}
-                  className={
-                    item.id === paperId ? "detail-library-item active" : "detail-library-item"
-                  }
-                >
-                  <i aria-hidden="true" />
-                  <div>
-                    <strong>{item.title}</strong>
-                    <span>
-                      {item.authors.map((author) => author.displayName).join(", ") || "著者未設定"}
-                    </span>
-                  </div>
-                  <time>{item.publicationYear ?? "—"}</time>
-                  <span className={`status-badge status-${item.status}`}>
-                    {statusLabel[item.status]}
-                  </span>
-                </Link>
-              ))
-            ) : (
-              <div className="detail-library-message">該当する論文がありません。</div>
-            )}
-          </div>
-        </aside>
-      )}
-
       <div className="paper-detail-panel" key={paperId}>
         <header className="detail-topbar">
           {drawer ? (
@@ -444,14 +476,15 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
                 className="button secondary compact"
                 onClick={() => setMobileTab("details")}
               >
-                <ArrowLeft size={16} /> 論文情報に戻る
+                <ArrowLeft size={16} /> 詳細に戻る
               </button>
             )}
             <PdfUpload
               paperId={paperId}
-              onComplete={() =>
-                void queryClient.invalidateQueries({ queryKey: ["paper", paperId] })
-              }
+              onComplete={() => {
+                void queryClient.invalidateQueries({ queryKey: ["paper", paperId] });
+                void queryClient.invalidateQueries({ queryKey: ["papers"] });
+              }}
             />
             <ActionMenu
               label="論文のその他の操作"
@@ -472,7 +505,7 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
                   disabled: copyBibtex.isPending,
                 },
                 {
-                  label: data.status === "archived" ? "未着手に戻す" : "保管済みにする",
+                  label: data.status === "archived" ? "一覧に戻す" : "アーカイブ",
                   icon: <Archive size={17} />,
                   onSelect: () =>
                     update.mutate({ status: data.status === "archived" ? "inbox" : "archived" }),
@@ -558,20 +591,37 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
           </nav>
         )}
 
-        <div className="mobile-detail-tabs" role="tablist" aria-label="論文詳細の表示">
+        <div
+          className="mobile-detail-tabs"
+          role="tablist"
+          aria-label="論文詳細の表示"
+          onKeyDown={(event) => {
+            if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+            event.preventDefault();
+            const next = mobileTab === "pdf" ? "details" : "pdf";
+            setMobileTab(next);
+            document.getElementById(`detail-tab-${next}`)?.focus();
+          }}
+        >
           <button
+            id="detail-tab-pdf"
             type="button"
             role="tab"
             aria-selected={mobileTab === "pdf"}
+            aria-controls="detail-panel-pdf"
+            tabIndex={mobileTab === "pdf" ? 0 : -1}
             className={mobileTab === "pdf" ? "active" : ""}
             onClick={() => setMobileTab("pdf")}
           >
             PDF
           </button>
           <button
+            id="detail-tab-details"
             type="button"
             role="tab"
             aria-selected={mobileTab === "details"}
+            aria-controls="detail-panel-details"
+            tabIndex={mobileTab === "details" ? 0 : -1}
             className={mobileTab === "details" ? "active" : ""}
             onClick={() => setMobileTab("details")}
           >
@@ -581,7 +631,9 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
 
         <div className={`detail-split ${inspectorOpen ? "inspector-open" : "inspector-closed"}`}>
           <div
+            id="detail-panel-pdf"
             role="tabpanel"
+            aria-labelledby="detail-tab-pdf"
             className={mobileTab === "pdf" ? "pdf-pane mobile-active" : "pdf-pane"}
           >
             {comparePdfs && verifiedFiles.length > 1 ? (
@@ -624,11 +676,12 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
             )}
           </div>
           <aside
+            id="detail-panel-details"
             role="tabpanel"
+            aria-labelledby="detail-tab-details"
             className={mobileTab === "details" ? "metadata-pane mobile-active" : "metadata-pane"}
           >
-            <div className="inspector-tabs" aria-label="論文情報">
-              <span className="inspector-heading">論文情報</span>
+            <div className="inspector-tabs" aria-label="詳細パネル">
               <button
                 type="button"
                 className="icon-button inspector-close"
@@ -651,29 +704,44 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
                           ? `${duplicates.data.length} 件の類似論文があります。`
                           : "複数の情報源から候補が見つかりました。"}
                       </p>
+                      {duplicates.data?.length ? (
+                        <ul className="duplicate-candidates">
+                          {duplicates.data.slice(0, 3).map((candidate) => (
+                            <li key={candidate.paper.id}>
+                              <Link
+                                to="/papers/$paperId"
+                                params={{ paperId: candidate.paper.id }}
+                                onClick={drawer ? onClose : undefined}
+                              >
+                                <span>{candidate.paper.title}</span>
+                                <small>
+                                  {candidate.reasons.includes("title_year")
+                                    ? "タイトルと出版年が一致"
+                                    : "識別子またはPDFが一致"}
+                                </small>
+                              </Link>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
                     </div>
                   </div>
                 )}
                 <section className="paper-identity">
                   <div className="paper-meta-line">
-                    {data.status === "archived" ? (
-                      <span className="status-badge status-archived" aria-label="状態: 保管済み">
-                        保管済み
-                      </span>
-                    ) : (
-                      <label className={`status-badge status-${data.status}`}>
-                        <span className="sr-only">状態</span>
-                        <select
-                          value={data.status}
-                          onChange={(event) => update.mutate({ status: event.target.value })}
-                          disabled={update.isPending}
-                        >
-                          <option value="inbox">未着手</option>
-                          <option value="reading">読書中</option>
-                          <option value="read">読了</option>
-                        </select>
-                      </label>
-                    )}
+                    <label className={`status-badge status-${data.status}`}>
+                      <span className="sr-only">状態</span>
+                      <select
+                        value={data.status}
+                        onChange={(event) => update.mutate({ status: event.target.value })}
+                        disabled={update.isPending}
+                      >
+                        <option value="inbox">未着手</option>
+                        <option value="reading">読書中</option>
+                        <option value="read">読了</option>
+                        <option value="archived">アーカイブ</option>
+                      </select>
+                    </label>
                     <span className="publication-year">
                       <CalendarDays size={13} /> {data.publicationYear ?? "出版年不明"}
                     </span>
@@ -897,6 +965,183 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
                   </div>
                 </section>
 
+                <section className="notes-workspace" id="paper-notes">
+                  <header>
+                    <div>
+                      <p className="eyebrow">NOTES</p>
+                      <h2>メモとToDo</h2>
+                    </div>
+                    <span className="note-count">{data.notes.length}件</span>
+                  </header>
+                  <form
+                    className="note-composer"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      if (noteDraft.trim()) createNote.mutate();
+                    }}
+                  >
+                    <textarea
+                      value={noteDraft}
+                      rows={3}
+                      maxLength={1_000_000}
+                      placeholder={
+                        noteType === "page"
+                          ? `${currentPage}ページ目の気づきを記録…`
+                          : noteType === "todo"
+                            ? "あとで確認すること…"
+                            : "この論文についてメモを追加…"
+                      }
+                      aria-label="新しいメモ"
+                      onChange={(event) => setNoteDraft(event.target.value)}
+                    />
+                    <footer>
+                      <div className="note-type-options" role="group" aria-label="メモの種類">
+                        <button
+                          type="button"
+                          className={noteType === "general" ? "active" : ""}
+                          aria-pressed={noteType === "general"}
+                          onClick={() => setNoteType("general")}
+                        >
+                          <MessageSquarePlus size={14} /> 一般メモ
+                        </button>
+                        <button
+                          type="button"
+                          className={noteType === "page" ? "active" : ""}
+                          aria-pressed={noteType === "page"}
+                          onClick={() => setNoteType("page")}
+                        >
+                          <MapPin size={14} /> {currentPage}ページ
+                        </button>
+                        <button
+                          type="button"
+                          className={noteType === "todo" ? "active" : ""}
+                          aria-pressed={noteType === "todo"}
+                          onClick={() => setNoteType("todo")}
+                        >
+                          <ListTodo size={14} /> ToDo
+                        </button>
+                      </div>
+                      <button
+                        className="button primary compact"
+                        disabled={!noteDraft.trim() || createNote.isPending}
+                      >
+                        {createNote.isPending ? "追加中…" : "メモを追加"}
+                      </button>
+                    </footer>
+                  </form>
+                  {createNote.error && (
+                    <p className="form-error" role="alert">
+                      メモを追加できませんでした。
+                    </p>
+                  )}
+                  <div className="note-workspace-list" aria-live="polite">
+                    {data.notes.length ? (
+                      data.notes.map((note) => (
+                        <article className={`workspace-note note-${note.noteType}`} key={note.id}>
+                          <header>
+                            <span>
+                              {note.noteType === "page" ? (
+                                <>
+                                  <MapPin size={13} /> {note.pageNumber}ページ
+                                </>
+                              ) : note.noteType === "todo" ? (
+                                <>
+                                  <ListTodo size={13} /> ToDo
+                                </>
+                              ) : (
+                                <>
+                                  <MessageSquarePlus size={13} /> メモ
+                                </>
+                              )}
+                            </span>
+                            <time dateTime={note.updatedAt}>{formatDate(note.updatedAt)}</time>
+                          </header>
+                          {editingNoteId === note.id ? (
+                            <form
+                              className="note-edit-form"
+                              onSubmit={(event) => {
+                                event.preventDefault();
+                                if (editingNoteDraft.trim()) editNote.mutate(note);
+                              }}
+                            >
+                              <textarea
+                                value={editingNoteDraft}
+                                rows={3}
+                                aria-label="メモを編集"
+                                onChange={(event) => setEditingNoteDraft(event.target.value)}
+                              />
+                              <div>
+                                <button
+                                  type="button"
+                                  className="text-button"
+                                  onClick={() => setEditingNoteId(null)}
+                                >
+                                  キャンセル
+                                </button>
+                                <button
+                                  className="button primary compact"
+                                  disabled={!editingNoteDraft.trim() || editNote.isPending}
+                                >
+                                  保存
+                                </button>
+                              </div>
+                            </form>
+                          ) : (
+                            <>
+                              <p>{note.contentMarkdown}</p>
+                              <footer>
+                                {note.noteType === "page" && note.pageNumber && (
+                                  <button
+                                    type="button"
+                                    className="text-button"
+                                    onClick={() => {
+                                      setCurrentPage(note.pageNumber ?? 1);
+                                      setMobileTab("pdf");
+                                    }}
+                                  >
+                                    PDFで開く
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  className="text-button"
+                                  onClick={() => {
+                                    setEditingNoteId(note.id);
+                                    setEditingNoteDraft(note.contentMarkdown);
+                                  }}
+                                >
+                                  編集
+                                </button>
+                                <button
+                                  type="button"
+                                  className="text-button danger"
+                                  disabled={deleteNote.isPending}
+                                  onClick={() => {
+                                    if (window.confirm("このメモを削除しますか？"))
+                                      deleteNote.mutate(note);
+                                  }}
+                                >
+                                  削除
+                                </button>
+                              </footer>
+                            </>
+                          )}
+                        </article>
+                      ))
+                    ) : (
+                      <div className="notes-empty">
+                        <MessageSquarePlus size={20} />
+                        <p>気づきや次に確認することを、ここに残せます。</p>
+                      </div>
+                    )}
+                  </div>
+                  {(editNote.error || deleteNote.error) && (
+                    <p className="form-error" role="alert">
+                      メモを更新できませんでした。再読み込みしてお試しください。
+                    </p>
+                  )}
+                </section>
+
                 <section className="metadata-section" id="paper-abstract">
                   <header>
                     <h2>Abstract</h2>
@@ -905,9 +1150,13 @@ export function PaperDetailView({ paperId, drawer = false, onClose }: PaperDetai
                         type="button"
                         className="text-icon-button"
                         onClick={() => refresh.mutate()}
-                        disabled={refresh.isPending}
+                        disabled={refresh.isPending || metadataRefreshQueued}
                       >
-                        <RefreshCw size={15} className={refresh.isPending ? "spin" : ""} /> 再取得
+                        <RefreshCw
+                          size={15}
+                          className={refresh.isPending || metadataRefreshQueued ? "spin" : ""}
+                        />
+                        {metadataRefreshQueued ? "更新中…" : "再取得"}
                       </button>
                       <button
                         type="button"

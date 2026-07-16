@@ -311,7 +311,9 @@ function LibraryOrganization({
             />
           </label>
           <label className="collection-create-field">
-            <span>説明 <small>任意</small></span>
+            <span>
+              説明 <small>任意</small>
+            </span>
             <input
               value={collectionDescription}
               maxLength={10_000}
@@ -373,10 +375,26 @@ export function SettingsPage() {
   const preferencesQuery = useQuery({ queryKey: ["preferences"], queryFn: api.preferences });
   const [preferences, setPreferences] = useState<UserPreferences>(initialPreferences);
   const [accountConfirmation, setAccountConfirmation] = useState("");
+  const [activeSection, setActiveSection] = useState("account");
 
   useEffect(() => {
     if (preferencesQuery.data) setPreferences(preferencesQuery.data);
   }, [preferencesQuery.data]);
+
+  useEffect(() => {
+    const sections = [...document.querySelectorAll<HTMLElement>(".settings-card[id]")];
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0];
+        if (visible?.target.id) setActiveSection(visible.target.id);
+      },
+      { rootMargin: "-100px 0px -55%", threshold: [0.05, 0.3, 0.7] },
+    );
+    sections.forEach((section) => observer.observe(section));
+    return () => observer.disconnect();
+  }, []);
 
   const savePreferences = useMutation({
     mutationFn: () =>
@@ -414,6 +432,20 @@ export function SettingsPage() {
   const deletionConfirmed =
     accountEmail.length > 0 &&
     accountConfirmation.trim().toLowerCase() === accountEmail.toLowerCase();
+  const preferencesDirty = preferencesQuery.data
+    ? JSON.stringify({
+        defaultCollectionId: preferences.defaultCollectionId,
+        defaultTagIds: [...preferences.defaultTagIds].sort(),
+        defaultStatus: preferences.defaultStatus,
+        defaultExportFormat: preferences.defaultExportFormat,
+      }) !==
+      JSON.stringify({
+        defaultCollectionId: preferencesQuery.data.defaultCollectionId,
+        defaultTagIds: [...preferencesQuery.data.defaultTagIds].sort(),
+        defaultStatus: preferencesQuery.data.defaultStatus,
+        defaultExportFormat: preferencesQuery.data.defaultExportFormat,
+      })
+    : false;
 
   return (
     <div className="page settings-page">
@@ -427,25 +459,53 @@ export function SettingsPage() {
 
       <div className="settings-layout">
         <nav className="settings-nav" aria-label="設定メニュー">
-          <a href="#account" className="active">
+          <a
+            href="#account"
+            className={activeSection === "account" ? "active" : ""}
+            aria-current={activeSection === "account" ? "location" : undefined}
+          >
             <UserRound size={17} /> アカウント
           </a>
-          <a href="#devices">
+          <a
+            href="#devices"
+            className={activeSection === "devices" ? "active" : ""}
+            aria-current={activeSection === "devices" ? "location" : undefined}
+          >
             <Laptop size={17} /> 端末とセッション
           </a>
-          <a href="#defaults">
+          <a
+            href="#defaults"
+            className={activeSection === "defaults" ? "active" : ""}
+            aria-current={activeSection === "defaults" ? "location" : undefined}
+          >
             <ArchiveRestore size={17} /> 保存の既定値
           </a>
-          <a href="#organization">
+          <a
+            href="#organization"
+            className={activeSection === "organization" ? "active" : ""}
+            aria-current={activeSection === "organization" ? "location" : undefined}
+          >
             <Tags size={17} /> タグと分類
           </a>
-          <a href="#export">
+          <a
+            href="#export"
+            className={activeSection === "export" ? "active" : ""}
+            aria-current={activeSection === "export" ? "location" : undefined}
+          >
             <Download size={17} /> エクスポート
           </a>
-          <a href="#storage">
+          <a
+            href="#storage"
+            className={activeSection === "storage" ? "active" : ""}
+            aria-current={activeSection === "storage" ? "location" : undefined}
+          >
             <HardDrive size={17} /> ストレージ
           </a>
-          <a href="#security">
+          <a
+            href="#security"
+            className={activeSection === "security" ? "active" : ""}
+            aria-current={activeSection === "security" ? "location" : undefined}
+          >
             <Shield size={17} /> セキュリティ
           </a>
         </nav>
@@ -519,7 +579,11 @@ export function SettingsPage() {
                         type="button"
                         className="text-button danger"
                         disabled={revoke.isPending}
-                        onClick={() => revoke.mutate(device.id)}
+                        onClick={() => {
+                          if (window.confirm(`${device.deviceName} をログアウトしますか？`)) {
+                            revoke.mutate(device.id);
+                          }
+                        }}
                       >
                         <LogOut size={14} /> 失効
                       </button>
@@ -585,39 +649,48 @@ export function SettingsPage() {
                   <option value="read">読了</option>
                 </select>
               </label>
-              <label className="full">
-                既定のタグ
-                <select
-                  className="multi-select"
-                  multiple
-                  value={preferences.defaultTagIds}
-                  disabled={tags.isPending || preferencesQuery.isPending}
-                  onChange={(event) =>
-                    setPreferences((current) => ({
-                      ...current,
-                      defaultTagIds: Array.from(
-                        event.currentTarget.selectedOptions,
-                        (option) => option.value,
-                      ),
-                    }))
-                  }
-                >
-                  {tags.data?.map((tag) => (
-                    <option key={tag.id} value={tag.id}>
-                      {tag.name}
-                    </option>
-                  ))}
-                </select>
-                <span className="settings-hint">
-                  複数選択できます。未選択なら既定タグは付与しません。
-                </span>
-              </label>
+              <fieldset
+                className="full preference-tags"
+                disabled={tags.isPending || preferencesQuery.isPending}
+              >
+                <legend>既定のタグ</legend>
+                <div className="preference-tag-options">
+                  {tags.data?.length ? (
+                    tags.data.map((tag) => {
+                      const checked = preferences.defaultTagIds.includes(tag.id);
+                      return (
+                        <label key={tag.id} className={checked ? "selected" : ""}>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() =>
+                              setPreferences((current) => ({
+                                ...current,
+                                defaultTagIds: checked
+                                  ? current.defaultTagIds.filter((id) => id !== tag.id)
+                                  : [...current.defaultTagIds, tag.id],
+                              }))
+                            }
+                          />
+                          <i style={{ background: tag.color ?? "#73846f" }} />
+                          {tag.name}
+                        </label>
+                      );
+                    })
+                  ) : (
+                    <span className="settings-hint">タグはまだありません。</span>
+                  )}
+                </div>
+                <span className="settings-hint">選択したタグを新しい論文へ自動で付けます。</span>
+              </fieldset>
             </div>
             <footer>
               <button
                 type="button"
                 className="button primary compact"
-                disabled={preferencesQuery.isPending || savePreferences.isPending}
+                disabled={
+                  preferencesQuery.isPending || savePreferences.isPending || !preferencesDirty
+                }
                 onClick={() => savePreferences.mutate()}
               >
                 <Save size={15} /> {savePreferences.isPending ? "保存中…" : "変更を保存"}
@@ -642,8 +715,8 @@ export function SettingsPage() {
                 <Tags size={19} />
               </div>
               <div>
-            <h2>タグとフォルダー</h2>
-            <p>分類を作成・変更し、フォルダーの階層を管理します。</p>
+                <h2>タグとフォルダー</h2>
+                <p>分類を作成・変更し、フォルダーの階層を管理します。</p>
               </div>
             </header>
             {tags.isPending || collections.isPending ? (
@@ -736,7 +809,7 @@ export function SettingsPage() {
               </div>
               <div>
                 <h2>データ使用量</h2>
-                <p>Cloudflare D1 と R2 に保存しているデータの概算です。</p>
+                <p>クラウドに保存しているライブラリデータの概算です。</p>
               </div>
             </header>
             <div className="usage-grid">
@@ -762,10 +835,7 @@ export function SettingsPage() {
                 使用量を取得できませんでした。
               </p>
             )}
-            <p className="settings-hint">
-              無料枠は変更されることがあります。現在値は Cloudflare
-              の公式料金ページで確認してください。
-            </p>
+            <p className="settings-hint">容量はファイルの検証完了後に更新されます。</p>
           </section>
 
           <section className="settings-card" id="security">
@@ -782,8 +852,8 @@ export function SettingsPage() {
               <p>
                 <Shield size={17} />
                 <span>
-                  <strong>プライベート R2</strong>PDF は公開バケットを経由せず、短時間だけ有効な URL
-                  で転送されます。
+                  <strong>非公開ファイルストレージ</strong>PDF
+                  は公開領域を経由せず、短時間だけ有効な URL で安全に転送されます。
                 </span>
               </p>
               <p>

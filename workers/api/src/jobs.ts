@@ -10,6 +10,7 @@ export function jobOutboxStatement(
   db: D1Database,
   job: JobMessage,
   createdAt = nowUtcIso(),
+  availableAt = createdAt,
 ): D1PreparedStatement {
   return db
     .prepare(
@@ -17,7 +18,7 @@ export function jobOutboxStatement(
        (id,idempotency_key,job_json,state,attempts,available_at,created_at)
        VALUES (?,?,?,'pending',0,?,?)`,
     )
-    .bind(createId("out"), jobIdempotencyKey(job), JSON.stringify(job), createdAt, createdAt);
+    .bind(createId("out"), jobIdempotencyKey(job), JSON.stringify(job), availableAt, createdAt);
 }
 
 export async function dispatchOutboxJobs(

@@ -45,6 +45,16 @@ const noteInputSchema = z
     }
   });
 
+const notePatchSchema = z
+  .object({
+    parentNoteId: z.string().min(1).nullable().optional(),
+    noteType: NoteTypeSchema.optional(),
+    pageNumber: z.number().int().positive().nullable().optional(),
+    anchor: NoteAnchorSchema.nullable().optional(),
+    contentMarkdown: z.string().max(1_000_000).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, "At least one field is required");
+
 function parseIfMatch(value: string | undefined): number {
   if (!value) throw new ApiError(428, "IF_MATCH_REQUIRED", "If-Match is required for this update.");
   const parsed = Number(value.replace(/^W\//u, "").replaceAll('"', ""));
@@ -629,10 +639,7 @@ notesRoutes.post("/papers/:paperId/notes", async (c) => {
 });
 
 notesRoutes.patch("/notes/:noteId", async (c) => {
-  const input = noteInputSchema
-    .partial()
-    .refine((value) => Object.keys(value).length > 0)
-    .parse(await c.req.json());
+  const input = notePatchSchema.parse(await c.req.json());
   const userId = c.get("user").id;
   const noteId = c.req.param("noteId");
   const expectedVersion = parseIfMatch(c.req.header("If-Match"));

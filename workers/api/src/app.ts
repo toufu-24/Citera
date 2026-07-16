@@ -149,15 +149,16 @@ app.use("*", async (c, next) => {
 });
 
 async function rateLimit(c: Context<AppBindings>, next: Next): Promise<void> {
+  const path = c.req.path.replace(/^\/api\/v1/u, "/v1");
   const authSensitive = /^(?:\/v1|\/api\/v1)\/auth\//u.test(c.req.path);
   const uploadSensitive = c.req.path.endsWith("/files/upload-url");
   const expensive =
     (c.req.method === "POST" &&
-      (c.req.path === "/v1/exports" ||
-        c.req.path === "/v1/ingestions" ||
-        c.req.path.endsWith("/refresh-metadata") ||
-        c.req.path === "/v1/sync/mutations")) ||
-    (c.req.method === "DELETE" && c.req.path === "/v1/account");
+      (path === "/v1/exports" ||
+        path === "/v1/ingestions" ||
+        path.endsWith("/refresh-metadata") ||
+        path === "/v1/sync/mutations")) ||
+    (c.req.method === "DELETE" && path === "/v1/account");
   if (!authSensitive && !uploadSensitive && !expensive) return next();
   const scope = uploadSensitive ? "upload" : expensive ? "expensive" : "auth";
   const duration = uploadSensitive || expensive ? 60 : 300;
@@ -189,6 +190,7 @@ async function rateLimit(c: Context<AppBindings>, next: Next): Promise<void> {
 }
 
 app.use("/v1/*", rateLimit);
+app.use("/api/v1/*", rateLimit);
 
 app.get("/health", (c) => c.json({ name: "Citera API", status: "ok" }));
 app.get("/v1/health", async (c) => {
@@ -202,6 +204,12 @@ app.get("/v1/auth/login/:provider", beginGoogleLogin);
 app.get("/v1/auth/callback/:provider", finishGoogleLogin);
 app.post("/v1/auth/extension/token", exchangeExtensionToken);
 app.post("/v1/auth/refresh", refreshSession);
+app.post("/api/v1/auth/dev-login", devLogin);
+app.post("/api/v1/auth/logout", logout);
+app.get("/api/v1/auth/login/:provider", beginGoogleLogin);
+app.get("/api/v1/auth/callback/:provider", finishGoogleLogin);
+app.post("/api/v1/auth/extension/token", exchangeExtensionToken);
+app.post("/api/v1/auth/refresh", refreshSession);
 
 app.use("/v1/*", authenticate);
 app.use("/api/v1/*", authenticate);
@@ -211,6 +219,10 @@ app.get("/v1/auth/session", authSession);
 app.get("/v1/me", authSession);
 app.get("/v1/auth/devices", listDevices);
 app.delete("/v1/auth/devices/:sessionId", revokeDevice);
+app.get("/api/v1/auth/extension/authorize", authorizeExtension);
+app.get("/api/v1/auth/session", authSession);
+app.get("/api/v1/auth/devices", listDevices);
+app.delete("/api/v1/auth/devices/:sessionId", revokeDevice);
 
 app.route("/v1/papers", papersRoutes);
 app.route("/v1", metadataRoutes);
@@ -231,7 +243,7 @@ app.get("/api/v1/me", authSession);
 app.route("/api/v1/items", papersRoutes);
 app.route("/api/v1/papers", papersRoutes);
 app.route("/api/v1", metadataRoutes);
-app.route("/api/v1", paperTagsRoutes);
+app.route("/api/v1/papers", paperTagsRoutes);
 app.route("/api/v1/items", paperTagsRoutes);
 app.route("/api/v1/tags", tagsRoutes);
 app.route("/api/v1/collections", collectionsRoutes);

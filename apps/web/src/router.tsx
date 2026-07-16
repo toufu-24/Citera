@@ -11,12 +11,38 @@ import {
 import { api, ApiRequestError } from "./lib/api";
 import { activateDatabaseForUser } from "./lib/database";
 
+function RootError({ error, reset }: { error: Error; reset: () => void }) {
+  const isOffline = !navigator.onLine;
+  return (
+    <main className="standalone-message route-error">
+      <img className="brand-mark" src="/favicon.svg" alt="" />
+      <p className="eyebrow">{isOffline ? "OFFLINE" : "CONNECTION ERROR"}</p>
+      <h1>{isOffline ? "現在オフラインです" : "Citeraを開けませんでした"}</h1>
+      <p>
+        {isOffline
+          ? "ネットワークに再接続してから、もう一度お試しください。"
+          : "一時的な接続エラーが発生しました。データが失われることはありません。"}
+      </p>
+      {import.meta.env.DEV && <small>{error.message}</small>}
+      <div className="route-error-actions">
+        <button className="button primary" type="button" onClick={reset}>
+          もう一度試す
+        </button>
+        <a className="button secondary" href="/login">
+          ログイン画面へ
+        </a>
+      </div>
+    </main>
+  );
+}
+
 interface RouterContext {
   queryClient: QueryClient;
 }
 
 const rootRoute = createRootRouteWithContext<RouterContext>()({
   component: () => <Outlet />,
+  errorComponent: RootError,
   notFoundComponent: () => (
     <main className="standalone-message">
       <p className="eyebrow">404</p>
@@ -65,6 +91,11 @@ const appRoute = createRoute({
         // TanStack Router models redirects as control-flow values rather than Error instances.
         // eslint-disable-next-line @typescript-eslint/only-throw-error
         throw redirect({ to: "/login", search: { returnTo: location.href } });
+      }
+      // A temporary API outage must not block access to the user-scoped offline store.
+      // Screen-level queries surface a recoverable error when no cached data exists.
+      if (error instanceof TypeError || (error instanceof ApiRequestError && error.status >= 500)) {
+        return;
       }
       throw error;
     }

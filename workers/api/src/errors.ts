@@ -3,7 +3,7 @@ import { ZodError } from "zod";
 import type { AppBindings } from "./types";
 
 export class ApiError extends Error {
-  readonly status: 400 | 401 | 403 | 404 | 409 | 413 | 422 | 428 | 429 | 500 | 502 | 503;
+  readonly status: 400 | 401 | 403 | 404 | 409 | 410 | 413 | 422 | 428 | 429 | 500 | 502 | 503;
   readonly code: string;
   readonly details: Record<string, unknown>;
 

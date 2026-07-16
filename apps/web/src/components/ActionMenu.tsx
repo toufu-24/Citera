@@ -28,6 +28,7 @@ export function ActionMenu({ label, items, className = "" }: ActionMenuProps) {
     };
     const closeFromKeyboard = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      event.stopPropagation();
       setOpen(false);
       triggerRef.current?.focus();
     };

@@ -278,6 +278,39 @@ describe("Citera Workers API", () => {
     expect(contentResponse.status).toBe(200);
     expect(new Uint8Array(await contentResponse.arrayBuffer())).toEqual(pdf);
 
+    const deleteFileResponse = await request(
+      `/v1/files/${ticket.file.id}`,
+      { method: "DELETE" },
+      aliceCookie,
+    );
+    expect(deleteFileResponse.status).toBe(204);
+    const cleanupOutbox = await env.DB.prepare(
+      `SELECT available_at,created_at FROM job_outbox
+       WHERE json_extract(job_json,'$.type')='object.cleanup'
+         AND json_extract(job_json,'$.fileId')=?`,
+    )
+      .bind(ticket.file.id)
+      .first<{ available_at: string; created_at: string }>();
+    expect(cleanupOutbox).toBeTruthy();
+    expect(new Date(cleanupOutbox?.available_at ?? 0).getTime()).toBeGreaterThan(
+      new Date(cleanupOutbox?.created_at ?? 0).getTime(),
+    );
+
+    const restoreFileResponse = await request(
+      `/v1/files/${ticket.file.id}/restore`,
+      { method: "POST" },
+      aliceCookie,
+    );
+    expect(restoreFileResponse.status).toBe(200);
+    const pendingCleanup = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM job_outbox
+       WHERE state='pending' AND json_extract(job_json,'$.type')='object.cleanup'
+         AND json_extract(job_json,'$.fileId')=?`,
+    )
+      .bind(ticket.file.id)
+      .first<{ count: number }>();
+    expect(Number(pendingCleanup?.count ?? 0)).toBe(0);
+
     const listResponse = await request(
       "/v1/papers?q=vector&hasPdf=true&hasNotes=true",
       {},
@@ -337,6 +370,49 @@ describe("Citera Workers API", () => {
     await expect(restoreResponse.json()).resolves.toMatchObject({
       error: { code: "DUPLICATE_IDENTIFIER" },
     });
+  });
+
+  it("keeps omitted paper fields intact during focused patches", async () => {
+    const user = await login("focused-patch@citera.test");
+    const createdResponse = await request(
+      "/v1/papers",
+      {
+        method: "POST",
+        json: {
+          title: "Focused patch regression",
+          paperType: "thesis",
+          status: "archived",
+          priority: 4,
+          readProgress: 63,
+          metadataState: "complete",
+        },
+      },
+      user.cookie,
+    );
+    expect(createdResponse.status).toBe(201);
+    const created = await jsonBody(createdResponse);
+
+    const patchedResponse = await request(
+      `/v1/papers/${created.id}`,
+      { method: "PATCH", headers: { "If-Match": '"1"' }, json: { rating: 5 } },
+      user.cookie,
+    );
+    expect(patchedResponse.status).toBe(200);
+    await expect(patchedResponse.json()).resolves.toMatchObject({
+      rating: 5,
+      paperType: "thesis",
+      status: "archived",
+      priority: 4,
+      readProgress: 63,
+      metadataState: "complete",
+    });
+
+    const emptyPatch = await request(
+      `/v1/papers/${created.id}`,
+      { method: "PATCH", headers: { "If-Match": '"2"' }, json: {} },
+      user.cookie,
+    );
+    expect(emptyPatch.status).toBe(422);
   });
 
   it("rejects unauthenticated access with the stable error envelope", async () => {

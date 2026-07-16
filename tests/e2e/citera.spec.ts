@@ -44,6 +44,7 @@ function createMinimalPdf(): Buffer {
 }
 
 test("owner can add, upload, read, annotate, search, and export a paper", async ({ page }) => {
+  test.setTimeout(60_000);
   const title = `Citera E2E ${Date.now()}`;
 
   await page.goto("/login");
@@ -70,6 +71,7 @@ test("owner can add, upload, read, annotate, search, and export a paper", async 
     "未着手",
     "読書中",
     "読了",
+    "アーカイブ",
   ]);
   await page.locator('.pdf-upload input[type="file"]').setInputFiles({
     name: "citera-e2e.pdf",
@@ -108,7 +110,7 @@ test("owner can add, upload, read, annotate, search, and export a paper", async 
   await expect(page.getByRole("img", { name: `${title}、8 ページ目` })).toBeVisible();
   await expect(page.locator(".pdf-stage canvas")).toHaveCount(4);
 
-  await page.getByRole("button", { name: "論文情報に戻る" }).click();
+  await page.getByRole("button", { name: "詳細に戻る" }).click();
   await expect(page.getByRole("heading", { name: "Abstract", exact: true })).toBeVisible();
   await expect(page.getByRole("tab", { name: "目次" })).toHaveCount(0);
   const commentSection = page.locator("#paper-comment");
@@ -120,6 +122,20 @@ test("owner can add, upload, read, annotate, search, and export a paper", async 
   await summarySection.getByLabel("一言要約").fill("再現実験の設計と評価方法を確認する論文");
   await summarySection.getByRole("button", { name: "保存" }).click();
 
+  const notesSection = page.locator(".notes-workspace");
+  await notesSection.getByLabel("新しいメモ").fill("8ページ目の評価条件を再確認する");
+  await notesSection.getByRole("button", { name: "8ページ" }).click();
+  await notesSection.getByRole("button", { name: "メモを追加" }).click();
+  const createdNote = notesSection.locator(".workspace-note").first();
+  await expect(createdNote).toBeVisible();
+  await expect(createdNote.locator("p")).toHaveText("8ページ目の評価条件を再確認する");
+  await createdNote.getByRole("button", { name: "編集" }).click();
+  const noteEditForm = notesSection.locator(".note-edit-form");
+  await noteEditForm.getByLabel("メモを編集").fill("8ページ目の評価指標を再確認する");
+  await noteEditForm.getByRole("button", { name: "保存" }).click();
+  await expect(noteEditForm).toHaveCount(0);
+  await expect(createdNote.locator("p")).toHaveText("8ページ目の評価指標を再確認する");
+
   await page.getByRole("button", { name: "論文詳細を閉じる" }).last().click();
   await page.getByRole("link", { name: "ライブラリ" }).first().click();
   await page.getByLabel("論文を検索").fill(title);
@@ -127,8 +143,27 @@ test("owner can add, upload, read, annotate, search, and export a paper", async 
   await expect(page.getByRole("row").filter({ hasText: title })).toContainText(
     "再現実験の設計と評価方法を確認する論文",
   );
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect
+    .poll(() =>
+      page
+        .locator(".table-scroll")
+        .evaluate((scroller) => scroller.scrollWidth <= scroller.clientWidth + 1),
+    )
+    .toBeTruthy();
 
   const row = page.getByRole("row").filter({ hasText: title });
+  const statusResponse = page.waitForResponse(
+    (response) => response.url().includes("/v1/papers/") && response.request().method() === "PATCH",
+  );
+  await row.getByLabel(`${title} の状態`).selectOption("reading");
+  await expect((await statusResponse).ok()).toBeTruthy();
+  await expect(row.getByLabel(`${title} の状態`)).toHaveValue("reading");
+
+  await row.getByRole("button", { name: `${title} のPDFを開く` }).click();
+  await expect(page.locator(".pdf-stage canvas").first()).toBeVisible({ timeout: 20_000 });
+  await page.getByRole("button", { name: "論文詳細を閉じる" }).last().click();
+
   const fourStarButton = row.getByRole("button", { name: `${title}を4つ星に評価` });
   await fourStarButton.click();
   await expect(fourStarButton.locator("svg")).toHaveAttribute("fill", "currentColor");

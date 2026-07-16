@@ -1,5 +1,5 @@
 import { CheckCircle2, FileUp, LoaderCircle, X } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api, shouldSendCredentials } from "../lib/api";
 
@@ -20,6 +20,15 @@ export function PdfUpload({ paperId, onComplete }: PdfUploadProps) {
     "idle" | "hashing" | "uploading" | "verifying" | "done" | "error"
   >("idle");
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (state !== "done") return;
+    const timer = window.setTimeout(() => {
+      setProgress(0);
+      setState("idle");
+    }, 1_500);
+    return () => window.clearTimeout(timer);
+  }, [state]);
 
   async function upload(file: File) {
     setRetryFile(file);

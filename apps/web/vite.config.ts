@@ -35,7 +35,19 @@ export default defineConfig({
       },
       workbox: {
         navigateFallback: "/index.html",
-        globPatterns: ["**/*.{js,css,html,woff2,png,svg,ico,bcmap,ttf,pfb}"],
+        navigateFallbackDenylist: [/^\/cdn-cgi\//, /^\/v1\//, /^\/api\/v1\//, /^\/health$/],
+        globPatterns: ["**/*.{js,css,html,woff2,svg,ico}", "favicon-*.png", "apple-touch-icon.png"],
+        globIgnores: ["og.png", "pdfjs/**/*"],
+        runtimeCaching: [
+          {
+            urlPattern: /\/pdfjs\/(?:cmaps|standard_fonts)\//,
+            handler: "CacheFirst",
+            options: {
+              cacheName: "citera-pdf-assets-v1",
+              expiration: { maxEntries: 240, maxAgeSeconds: 60 * 60 * 24 * 365 },
+            },
+          },
+        ],
         cleanupOutdatedCaches: true,
       },
     }),
@@ -54,7 +66,6 @@ export default defineConfig({
         manualChunks: {
           "react-vendor": ["react", "react-dom", "@tanstack/react-query", "@tanstack/react-router"],
           "offline-vendor": ["dexie"],
-          "markdown-vendor": ["dompurify", "marked"],
           icons: ["lucide-react"],
         },
       },

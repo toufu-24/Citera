@@ -43,13 +43,14 @@ import { parseCitationFile, resolveImportedTagIds } from "../lib/import";
 import { PaperDetailView } from "./PaperDetailPage";
 
 type StatusFilter = "all" | PaperListItem["status"] | "deleted";
-type PaperRowAction = "open" | "copy-bibtex" | "toggle-archive" | "trash" | "restore" | "rate";
+type PaperRowAction =
+  "open" | "copy-bibtex" | "toggle-archive" | "trash" | "restore" | "rate" | "change-status";
 
 const statusLabel: Record<PaperListItem["status"], string> = {
   inbox: "未着手",
   reading: "読書中",
   read: "読了",
-  archived: "保管済み",
+  archived: "アーカイブ",
 };
 
 const exportFormatLabel = {
@@ -63,6 +64,15 @@ const exportFormatLabel = {
 const MIN_DRAWER_WIDTH = 420;
 const MAX_DRAWER_WIDTH = 960;
 
+const quickStatusOptions: Array<{ value: StatusFilter; label: string }> = [
+  { value: "all", label: "すべて" },
+  { value: "inbox", label: "未着手" },
+  { value: "reading", label: "読書中" },
+  { value: "read", label: "読了" },
+  { value: "archived", label: "アーカイブ" },
+  { value: "deleted", label: "ゴミ箱" },
+];
+
 function clampDrawerWidth(value: number) {
   const viewportMax = Math.max(MIN_DRAWER_WIDTH, window.innerWidth - 320);
   return Math.min(Math.min(MAX_DRAWER_WIDTH, viewportMax), Math.max(MIN_DRAWER_WIDTH, value));
@@ -74,6 +84,72 @@ function formatDate(value: string) {
     day: "numeric",
     year: "numeric",
   }).format(new Date(value));
+}
+
+function offlinePaperPage(all: PaperListItem[], search: URLSearchParams) {
+  const query = search.get("q")?.trim().toLocaleLowerCase("ja-JP") ?? "";
+  const status = search.get("status");
+  const deleted = search.get("deleted") === "only";
+  const hasPdf = search.get("hasPdf");
+  const hasNotes = search.get("hasNotes");
+  const yearFrom = Number(search.get("yearFrom") || 0);
+  const yearTo = Number(search.get("yearTo") || 9999);
+  const collectionId = search.get("collection");
+  const recentBoundary = Date.now() - 30 * 24 * 60 * 60 * 1_000;
+  const filtered = all.filter((paper) => {
+    if (deleted ? !paper.deletedAt : Boolean(paper.deletedAt)) return false;
+    if (status && paper.status !== status) return false;
+    if (hasPdf === "true" && !paper.hasPdf) return false;
+    if (hasPdf === "false" && paper.hasPdf) return false;
+    if (hasNotes === "true" && !paper.hasNotes) return false;
+    if (hasNotes === "false" && paper.hasNotes) return false;
+    if (
+      paper.publicationYear &&
+      (paper.publicationYear < yearFrom || paper.publicationYear > yearTo)
+    ) {
+      return false;
+    }
+    if (search.get("recent") === "true" && new Date(paper.createdAt).getTime() < recentBoundary) {
+      return false;
+    }
+    if (collectionId && !paper.collections?.some((collection) => collection.id === collectionId)) {
+      return false;
+    }
+    if (!query) return true;
+    return [
+      paper.title,
+      paper.summary,
+      paper.venue,
+      ...paper.authors.map((author) => author.displayName),
+      ...paper.tags.map((tag) => tag.name),
+    ].some((value) => value?.toLocaleLowerCase("ja-JP").includes(query));
+  });
+  const [field, direction] = (search.get("sort") ?? "updated_at:desc").split(":");
+  const multiplier = direction === "asc" ? 1 : -1;
+  filtered.sort((left, right) => {
+    const leftValue =
+      field === "title"
+        ? left.title.toLocaleLowerCase("ja-JP")
+        : field === "created_at"
+          ? left.createdAt
+          : field === "publication_date"
+            ? (left.publicationDate ?? String(left.publicationYear ?? 0))
+            : field === "rating"
+              ? (left.rating ?? 0)
+              : left.updatedAt;
+    const rightValue =
+      field === "title"
+        ? right.title.toLocaleLowerCase("ja-JP")
+        : field === "created_at"
+          ? right.createdAt
+          : field === "publication_date"
+            ? (right.publicationDate ?? String(right.publicationYear ?? 0))
+            : field === "rating"
+              ? (right.rating ?? 0)
+              : right.updatedAt;
+    return (leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0) * multiplier;
+  });
+  return { items: filtered.slice(0, 50), nextCursor: null, hasMore: false };
 }
 
 function formString(form: FormData, name: string): string {
@@ -99,6 +175,12 @@ function duplicateDetailsFromError(error: unknown): {
   };
 }
 
+async function settlePaperOperations(ids: string[], operation: (id: string) => Promise<unknown>) {
+  const results = await Promise.allSettled(ids.map((id) => operation(id)));
+  const failedIds = ids.filter((_, index) => results[index]?.status === "rejected");
+  return { succeeded: ids.length - failedIds.length, failedIds };
+}
+
 function PaperRow({
   paper,
   checked,
@@ -106,6 +188,8 @@ function PaperRow({
   onOpen,
   onAction,
   onRate,
+  onStatusChange,
+  onOpenPdf,
   actionPending,
   open,
 }: {
@@ -115,6 +199,8 @@ function PaperRow({
   onOpen: (paperId: string) => void;
   onAction: (paper: PaperListItem, action: PaperRowAction) => void;
   onRate: (paper: PaperListItem, rating: number | null) => void;
+  onStatusChange: (paper: PaperListItem, status: PaperListItem["status"]) => void;
+  onOpenPdf: (paperId: string) => void;
   actionPending: boolean;
   open: boolean;
 }) {
@@ -122,7 +208,7 @@ function PaperRow({
     <tr
       className={`paper-row${checked ? " selected" : ""}${open ? " is-open" : ""}`}
       onClick={(event) => {
-        if ((event.target as HTMLElement).closest("a, button, input")) return;
+        if ((event.target as HTMLElement).closest("a, button, input, select, label")) return;
         onOpen(paper.id);
       }}
     >
@@ -154,13 +240,45 @@ function PaperRow({
           <p className="paper-authors">
             {paper.authors.map((author) => author.displayName).join(", ") || "著者未設定"}
           </p>
+          <p className="paper-mobile-meta">
+            {[paper.publicationYear, paper.venue].filter(Boolean).join(" · ") || "出版情報未設定"}
+          </p>
+          {(paper.tags.length > 0 || (paper.collections?.length ?? 0) > 0) && (
+            <div className="paper-mobile-taxonomy" aria-hidden="true">
+              {paper.tags.slice(0, 2).map((tag) => (
+                <span className="tag-chip" key={tag.id}>
+                  <i style={{ background: tag.color ?? "#73846f" }} /> {tag.name}
+                </span>
+              ))}
+              {paper.collections?.slice(0, 1).map((collection) => (
+                <span className="collection-chip" key={collection.id}>
+                  <Folder size={12} /> {collection.name}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       </td>
       <td className="summary-cell">
         {paper.summary ? <span title={paper.summary}>{paper.summary}</span> : <span>—</span>}
       </td>
-      <td>
-        <span className={`status-badge status-${paper.status}`}>{statusLabel[paper.status]}</span>
+      <td className="row-status-cell">
+        <label className={`status-badge status-${paper.status}`}>
+          <span className="sr-only">{paper.title} の状態</span>
+          <select
+            value={paper.status}
+            disabled={actionPending || Boolean(paper.deletedAt)}
+            aria-label={`${paper.title} の状態`}
+            onChange={(event) =>
+              onStatusChange(paper, event.target.value as PaperListItem["status"])
+            }
+          >
+            <option value="inbox">未着手</option>
+            <option value="reading">読書中</option>
+            <option value="read">読了</option>
+            <option value="archived">アーカイブ</option>
+          </select>
+        </label>
       </td>
       <td className="year-cell">{paper.publicationYear ?? "—"}</td>
       <td className="venue-cell">{paper.venue ?? "—"}</td>
@@ -188,7 +306,20 @@ function PaperRow({
         </div>
       </td>
       <td className="icon-state-cell" aria-label={paper.hasPdf ? "PDFあり" : "PDFなし"}>
-        {paper.hasPdf ? <FileText size={17} /> : <span>—</span>}
+        {paper.hasPdf ? (
+          <button
+            type="button"
+            className="pdf-open-button"
+            aria-label={`${paper.title} のPDFを開く`}
+            title="PDFを開く"
+            onClick={() => onOpenPdf(paper.id)}
+          >
+            <FileText size={16} />
+            <span className="pdf-open-label">PDF</span>
+          </button>
+        ) : (
+          <span>—</span>
+        )}
       </td>
       <td className="rating-cell">
         <div className="inline-rating" aria-label={`評価 ${paper.rating ?? 0} / 5`}>
@@ -241,7 +372,7 @@ function PaperRow({
                     disabled: actionPending,
                   },
                   {
-                    label: paper.status === "archived" ? "未着手に戻す" : "保管済みにする",
+                    label: paper.status === "archived" ? "一覧に戻す" : "アーカイブ",
                     icon:
                       paper.status === "archived" ? <RotateCcw size={17} /> : <Archive size={17} />,
                     onSelect: () => onAction(paper, "toggle-archive"),
@@ -267,7 +398,7 @@ export function LibraryPage() {
   const deferredQuery = useDeferredValue(query);
   const [status, setStatus] = useState<StatusFilter>("all");
   const [hasPdf, setHasPdf] = useState<"all" | "true" | "false">("all");
-  const [hasTranslation, setHasTranslation] = useState<"all" | "true" | "false">("all");
+  const [hasNotes, setHasNotes] = useState<"all" | "true" | "false">("all");
   const [recentOnly, setRecentOnly] = useState(false);
   const [yearFrom, setYearFrom] = useState("");
   const [yearTo, setYearTo] = useState("");
@@ -293,12 +424,17 @@ export function LibraryPage() {
     text: string;
   } | null>(null);
   const [openPaperId, setOpenPaperId] = useState<string | null>(null);
+  const [openPaperTab, setOpenPaperTab] = useState<"pdf" | "details">("details");
   const [manualEntry, setManualEntry] = useState(false);
   const [drawerWidth, setDrawerWidth] = useState(() =>
     clampDrawerWidth(Math.min(720, Math.round(window.innerWidth * 0.58))),
   );
   const [drawerResizing, setDrawerResizing] = useState(false);
   const drawerResizeStartRef = useRef<{ x: number; width: number } | null>(null);
+  const drawerRef = useRef<HTMLElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
   const newTagNameRef = useRef<HTMLInputElement>(null);
   const createDialog = useRef<HTMLDialogElement>(null);
   const queryClient = useQueryClient();
@@ -369,7 +505,7 @@ export function LibraryPage() {
     if (status === "deleted") params.set("deleted", "only");
     else if (status !== "all") params.set("status", status);
     if (hasPdf !== "all") params.set("hasPdf", hasPdf);
-    if (hasTranslation !== "all") params.set("hasTranslation", hasTranslation);
+    if (hasNotes !== "all") params.set("hasNotes", hasNotes);
     if (recentOnly) params.set("recent", "true");
     if (/^\d{4}$/u.test(yearFrom)) params.set("yearFrom", yearFrom);
     if (/^\d{4}$/u.test(yearTo)) params.set("yearTo", yearTo);
@@ -378,7 +514,7 @@ export function LibraryPage() {
   }, [
     deferredQuery,
     hasPdf,
-    hasTranslation,
+    hasNotes,
     recentOnly,
     selectedCollectionId,
     sort,
@@ -401,8 +537,9 @@ export function LibraryPage() {
         await db.papers.bulkPut(page.items);
         return page;
       } catch (error) {
-        if (!navigator.onLine && pageParam === null) {
-          return { items: await db.papers.toArray(), nextCursor: null, hasMore: false };
+        if (pageParam === null) {
+          const cached = await db.papers.toArray();
+          if (!navigator.onLine || cached.length > 0) return offlinePaperPage(cached, pageSearch);
         }
         throw error;
       }
@@ -411,6 +548,15 @@ export function LibraryPage() {
       lastPage.hasMore ? (lastPage.nextCursor ?? undefined) : undefined,
   });
   const items = papers.data?.pages.flatMap((page) => page.items) ?? [];
+  const activeFilterCount = [
+    status !== "all",
+    hasPdf !== "all",
+    hasNotes !== "all",
+    recentOnly,
+    yearFrom,
+    yearTo,
+  ].filter(Boolean).length;
+  const hasActiveSearch = Boolean(query.trim() || activeFilterCount > 0);
   const availableTags = useQuery({
     queryKey: ["tags"],
     queryFn: api.tags,
@@ -508,17 +654,21 @@ export function LibraryPage() {
   const bulkStatus = useMutation({
     mutationFn: async (nextStatus: PaperListItem["status"]) => {
       const byId = new Map(items.map((paper) => [paper.id, paper]));
-      await Promise.all(
-        [...selected].map((id) => {
-          const paper = byId.get(id);
-          return paper
-            ? api.updatePaper(id, paper.version, { status: nextStatus })
-            : Promise.resolve();
-        }),
-      );
+      return settlePaperOperations([...selected], (id) => {
+        const paper = byId.get(id);
+        return paper
+          ? api.updatePaper(id, paper.version, { status: nextStatus })
+          : Promise.reject(new Error("Paper is no longer in the current result"));
+      });
     },
-    onSuccess: async () => {
-      setSelected(new Set());
+    onSuccess: async ({ succeeded, failedIds }) => {
+      setSelected(new Set(failedIds));
+      setRowActionMessage({
+        kind: failedIds.length ? "error" : "success",
+        text: failedIds.length
+          ? `${succeeded}件を更新し、${failedIds.length}件は競合のため更新できませんでした。`
+          : `${succeeded}件の状態を更新しました。`,
+      });
       await queryClient.invalidateQueries({ queryKey: ["papers"] });
     },
   });
@@ -571,15 +721,21 @@ export function LibraryPage() {
   const bulkDelete = useMutation({
     mutationFn: async () => {
       const byId = new Map(items.map((paper) => [paper.id, paper]));
-      await Promise.all(
-        [...selected].map((id) => {
-          const paper = byId.get(id);
-          return paper ? api.removePaper(id, paper.version) : Promise.resolve();
-        }),
-      );
+      return settlePaperOperations([...selected], (id) => {
+        const paper = byId.get(id);
+        return paper
+          ? api.removePaper(id, paper.version)
+          : Promise.reject(new Error("Paper is no longer in the current result"));
+      });
     },
-    onSuccess: async () => {
-      setSelected(new Set());
+    onSuccess: async ({ succeeded, failedIds }) => {
+      setSelected(new Set(failedIds));
+      setRowActionMessage({
+        kind: failedIds.length ? "error" : "success",
+        text: failedIds.length
+          ? `${succeeded}件を移動し、${failedIds.length}件は移動できませんでした。`
+          : `${succeeded}件をゴミ箱へ移動しました。`,
+      });
       await queryClient.invalidateQueries({ queryKey: ["papers"] });
     },
   });
@@ -587,15 +743,21 @@ export function LibraryPage() {
   const bulkRestore = useMutation({
     mutationFn: async () => {
       const byId = new Map(items.map((paper) => [paper.id, paper]));
-      await Promise.all(
-        [...selected].map((id) => {
-          const paper = byId.get(id);
-          return paper ? api.restorePaper(id, paper.version) : Promise.resolve();
-        }),
-      );
+      return settlePaperOperations([...selected], (id) => {
+        const paper = byId.get(id);
+        return paper
+          ? api.restorePaper(id, paper.version)
+          : Promise.reject(new Error("Paper is no longer in the current result"));
+      });
     },
-    onSuccess: async () => {
-      setSelected(new Set());
+    onSuccess: async ({ succeeded, failedIds }) => {
+      setSelected(new Set(failedIds));
+      setRowActionMessage({
+        kind: failedIds.length ? "error" : "success",
+        text: failedIds.length
+          ? `${succeeded}件を復元し、${failedIds.length}件は重複または競合のため復元できませんでした。`
+          : `${succeeded}件を復元しました。`,
+      });
       await queryClient.invalidateQueries({ queryKey: ["papers"] });
     },
   });
@@ -612,10 +774,12 @@ export function LibraryPage() {
       paper,
       action,
       rating,
+      status,
     }: {
       paper: PaperListItem;
       action: PaperRowAction;
       rating?: number | null;
+      status?: PaperListItem["status"];
     }) => {
       if (action === "copy-bibtex") {
         await copyText(await api.bibtex(paper.id));
@@ -637,6 +801,10 @@ export function LibraryPage() {
       }
       if (action === "rate") {
         await api.updatePaper(paper.id, paper.version, { rating: rating ?? null });
+        return action;
+      }
+      if (action === "change-status" && status) {
+        await api.updatePaper(paper.id, paper.version, { status });
         return action;
       }
       return action;
@@ -673,15 +841,70 @@ export function LibraryPage() {
 
   useEffect(() => {
     if (!openPaperId) return;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpenPaperId(null);
+    const drawer = drawerRef.current;
+    const backgroundElements = drawer
+      ? [
+          ...(drawer.parentElement?.children ?? []),
+          ...document.querySelectorAll(
+            ".skip-link, .app-header, .mobile-app-nav, .connection-banner",
+          ),
+        ].filter(
+          (element, index, elements): element is HTMLElement =>
+            element instanceof HTMLElement &&
+            element !== drawer &&
+            !element.classList.contains("library-detail-backdrop") &&
+            elements.indexOf(element) === index,
+        )
+      : [];
+    const previousAriaHidden = backgroundElements.map((element) =>
+      element.getAttribute("aria-hidden"),
+    );
+    backgroundElements.forEach((element) => {
+      element.inert = true;
+      element.setAttribute("aria-hidden", "true");
+    });
+    const frame = window.requestAnimationFrame(() => drawer?.focus());
+    const handleDrawerKeys = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        if (document.querySelector('[role="menu"]')) return;
+        setOpenPaperId(null);
+        return;
+      }
+      if (event.key !== "Tab" || !drawer) return;
+      const focusable = [
+        ...drawer.querySelectorAll<HTMLElement>(
+          'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
+        ),
+      ].filter((element) => !element.hidden && element.offsetParent !== null);
+      if (!focusable.length) {
+        event.preventDefault();
+        drawer.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
     };
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    window.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("keydown", handleDrawerKeys);
     return () => {
+      window.cancelAnimationFrame(frame);
       document.body.style.overflow = previousOverflow;
-      window.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("keydown", handleDrawerKeys);
+      backgroundElements.forEach((element, index) => {
+        element.inert = false;
+        const previous = previousAriaHidden[index];
+        if (previous == null) element.removeAttribute("aria-hidden");
+        else element.setAttribute("aria-hidden", previous);
+      });
+      returnFocusRef.current?.focus();
     };
   }, [openPaperId]);
 
@@ -693,6 +916,24 @@ export function LibraryPage() {
       document.body.style.userSelect = previousUserSelect;
     };
   }, [drawerResizing]);
+
+  useEffect(() => {
+    const onShortcut = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.matches("input, textarea, select, [contenteditable='true']")) return;
+      if (event.key === "/") {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+      } else if (event.key.toLocaleLowerCase() === "n" && !createDialog.current?.open) {
+        event.preventDefault();
+        createPaper.reset();
+        setManualEntry(false);
+        createDialog.current?.showModal();
+      }
+    };
+    window.addEventListener("keydown", onShortcut);
+    return () => window.removeEventListener("keydown", onShortcut);
+  }, [createPaper]);
 
   function startDrawerResize(event: React.PointerEvent<HTMLDivElement>) {
     if (window.innerWidth <= 820) return;
@@ -736,7 +977,7 @@ export function LibraryPage() {
   function runRowAction(paper: PaperListItem, action: PaperRowAction) {
     setRowActionMessage(null);
     if (action === "open") {
-      setOpenPaperId(paper.id);
+      openPaper(paper.id);
       return;
     }
     if (action === "trash" && !window.confirm(`「${paper.title}」をゴミ箱へ移動しますか？`)) {
@@ -745,9 +986,21 @@ export function LibraryPage() {
     rowAction.mutate({ paper, action });
   }
 
+  function openPaper(paperId: string, tab: "pdf" | "details" = "details") {
+    returnFocusRef.current = document.activeElement as HTMLElement | null;
+    setOpenPaperTab(tab);
+    setOpenPaperId(paperId);
+  }
+
   function ratePaper(paper: PaperListItem, rating: number | null) {
     setRowActionMessage(null);
     rowAction.mutate({ paper, action: "rate", rating });
+  }
+
+  function changePaperStatus(paper: PaperListItem, status: PaperListItem["status"]) {
+    if (paper.status === status) return;
+    setRowActionMessage(null);
+    rowAction.mutate({ paper, action: "change-status", status });
   }
 
   function submitCreate(event: React.FormEvent<HTMLFormElement>) {
@@ -843,8 +1096,10 @@ export function LibraryPage() {
           <p className="eyebrow">YOUR RESEARCH</p>
           <h1>ライブラリ</h1>
           <p>
-            {papers.data ? `${items.length} 件を表示` : "論文を読み込んでいます"} ·
-            最終同期は自動更新
+            <span aria-live="polite">
+              {papers.data ? `${items.length} 件を表示` : "論文を読み込んでいます"}
+            </span>
+            <span aria-hidden="true"> · </span>変更は自動で同期
           </p>
         </div>
         <div className="heading-actions">
@@ -860,26 +1115,30 @@ export function LibraryPage() {
           >
             <Tag size={17} /> タグを追加
           </button>
-          <label
-            className={`button secondary file-import-button${importPapers.isPending ? " disabled" : ""}`}
+          <button
+            type="button"
+            className="button secondary file-import-button"
+            disabled={importPapers.isPending}
+            onClick={() => importInputRef.current?.click()}
           >
             <Upload size={17} /> {importPapers.isPending ? "インポート中…" : "インポート"}
-            <input
-              type="file"
-              accept=".bib,.bibtex,.ris,.json,.csv"
-              disabled={importPapers.isPending}
-              hidden
-              onChange={(event) => {
-                const file = event.currentTarget.files?.[0];
-                event.currentTarget.value = "";
-                if (file) {
-                  setImportMessage(null);
-                  importPapers.mutate(file);
-                }
-              }}
-            />
-          </label>
-          <button className="button primary" onClick={openCreateDialog}>
+          </button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".bib,.bibtex,.ris,.json,.csv"
+            disabled={importPapers.isPending}
+            hidden
+            onChange={(event) => {
+              const file = event.currentTarget.files?.[0];
+              event.currentTarget.value = "";
+              if (file) {
+                setImportMessage(null);
+                importPapers.mutate(file);
+              }
+            }}
+          />
+          <button className="button primary" onClick={openCreateDialog} title="論文を追加（N）">
             <Plus size={18} /> 論文を追加
           </button>
         </div>
@@ -1078,11 +1337,16 @@ export function LibraryPage() {
             <span>
               <strong>{selectedCollection.name}</strong>
               <small>
-                {collectionPath(selectedCollection, collections.data ?? [])} · {selectedCollection.paperCount ?? 0}件
+                {collectionPath(selectedCollection, collections.data ?? [])} ·{" "}
+                {selectedCollection.paperCount ?? 0}件
                 {selectedCollectionDescendantCount > 0 ? " · 子フォルダーを含む" : ""}
               </small>
             </span>
-            <button type="button" className="text-button" onClick={() => setSelectedCollectionId("")}>
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => setSelectedCollectionId("")}
+            >
               解除
             </button>
           </div>
@@ -1093,10 +1357,12 @@ export function LibraryPage() {
         <label className="search-field">
           <Search size={19} />
           <input
+            ref={searchInputRef}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="タイトル、著者、DOI、タグを検索…"
             aria-label="論文を検索"
+            aria-keyshortcuts="/"
           />
           {query && (
             <button onClick={() => setQuery("")} aria-label="検索をクリア">
@@ -1105,10 +1371,24 @@ export function LibraryPage() {
           )}
         </label>
         <button
-          className={filtersOpen ? "button filter-button active" : "button filter-button"}
+          className={
+            filtersOpen ||
+            status !== "all" ||
+            hasPdf !== "all" ||
+            hasNotes !== "all" ||
+            recentOnly ||
+            yearFrom ||
+            yearTo
+              ? "button filter-button active"
+              : "button filter-button"
+          }
           onClick={() => setFiltersOpen((value) => !value)}
+          aria-expanded={filtersOpen}
+          aria-controls="library-filter-panel"
         >
-          <SlidersHorizontal size={17} /> フィルター <ChevronDown size={15} />
+          <SlidersHorizontal size={17} /> フィルター
+          {activeFilterCount > 0 && <span className="filter-count">{activeFilterCount}</span>}
+          <ChevronDown size={15} />
         </button>
         <label className="sort-field">
           <ArrowDownUp size={17} />
@@ -1126,8 +1406,22 @@ export function LibraryPage() {
         </label>
       </section>
 
+      <div className="status-quick-filter" role="group" aria-label="読書状態で絞り込む">
+        {quickStatusOptions.map((option) => (
+          <button
+            type="button"
+            key={option.value}
+            className={status === option.value ? "active" : ""}
+            aria-pressed={status === option.value}
+            onClick={() => setStatus(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+
       {filtersOpen && (
-        <section className="filter-panel">
+        <section className="filter-panel" id="library-filter-panel">
           <label>
             状態
             <select
@@ -1138,7 +1432,7 @@ export function LibraryPage() {
               <option value="inbox">未着手</option>
               <option value="reading">読書中</option>
               <option value="read">読了</option>
-              <option value="archived">保管済み</option>
+              <option value="archived">アーカイブ</option>
               <option value="deleted">ゴミ箱</option>
             </select>
           </label>
@@ -1154,14 +1448,14 @@ export function LibraryPage() {
             </select>
           </label>
           <label>
-            翻訳版
+            メモ
             <select
-              value={hasTranslation}
-              onChange={(event) => setHasTranslation(event.target.value as typeof hasTranslation)}
+              value={hasNotes}
+              onChange={(event) => setHasNotes(event.target.value as typeof hasNotes)}
             >
               <option value="all">すべて</option>
-              <option value="true">あり</option>
-              <option value="false">なし</option>
+              <option value="true">メモあり</option>
+              <option value="false">メモなし</option>
             </select>
           </label>
           <label className="checkbox-filter">
@@ -1200,7 +1494,7 @@ export function LibraryPage() {
             onClick={() => {
               setStatus("all");
               setHasPdf("all");
-              setHasTranslation("all");
+              setHasNotes("all");
               setRecentOnly(false);
               setYearFrom("");
               setYearTo("");
@@ -1224,14 +1518,26 @@ export function LibraryPage() {
             </button>
           ) : (
             <>
-              <button type="button" onClick={() => bulkStatus.mutate("reading")}>
+              <button
+                type="button"
+                disabled={bulkStatus.isPending}
+                onClick={() => bulkStatus.mutate("reading")}
+              >
                 <BookOpen size={16} /> 読書中
               </button>
-              <button type="button" onClick={() => bulkStatus.mutate("read")}>
+              <button
+                type="button"
+                disabled={bulkStatus.isPending}
+                onClick={() => bulkStatus.mutate("read")}
+              >
                 <CheckCircle2 size={16} /> 読了
               </button>
-              <button type="button" onClick={() => bulkStatus.mutate("archived")}>
-                <Archive size={16} /> 保管
+              <button
+                type="button"
+                disabled={bulkStatus.isPending}
+                onClick={() => bulkStatus.mutate("archived")}
+              >
+                <Archive size={16} /> アーカイブ
               </button>
             </>
           )}
@@ -1313,6 +1619,7 @@ export function LibraryPage() {
             <button
               type="button"
               className="danger-action"
+              disabled={bulkDelete.isPending}
               onClick={() => {
                 if (window.confirm(`${selected.size} 件をゴミ箱へ移動しますか？`))
                   bulkDelete.mutate();
@@ -1348,16 +1655,26 @@ export function LibraryPage() {
           </div>
         ) : items.length === 0 ? (
           <div className="empty-state">
-            {selectedCollectionId ? <FolderOpen size={31} /> : <BookOpen size={31} />}
+            {selectedCollectionId ? (
+              <FolderOpen size={31} />
+            ) : hasActiveSearch ? (
+              <Search size={31} />
+            ) : (
+              <BookOpen size={31} />
+            )}
             <h2>
               {selectedCollectionId
                 ? "このフォルダーにはまだ論文がありません"
-                : "最初の論文を追加しましょう"}
+                : hasActiveSearch
+                  ? "条件に一致する論文がありません"
+                  : "最初の論文を追加しましょう"}
             </h2>
             <p>
               {selectedCollectionId
                 ? "「すべての論文」に戻り、論文を選択してフォルダーへ追加できます。"
-                : "DOI、arXiv ID、または手入力から始められます。"}
+                : hasActiveSearch
+                  ? "検索語や絞り込み条件を変更して、もう一度お試しください。"
+                  : "DOI、arXiv ID、または手入力から始められます。"}
             </p>
             {selectedCollectionId ? (
               <button
@@ -1366,6 +1683,22 @@ export function LibraryPage() {
                 onClick={() => setSelectedCollectionId("")}
               >
                 すべての論文へ戻る
+              </button>
+            ) : hasActiveSearch ? (
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => {
+                  setQuery("");
+                  setStatus("all");
+                  setHasPdf("all");
+                  setHasNotes("all");
+                  setRecentOnly(false);
+                  setYearFrom("");
+                  setYearTo("");
+                }}
+              >
+                条件をすべて解除
               </button>
             ) : (
               <button className="button primary" onClick={openCreateDialog}>
@@ -1408,9 +1741,11 @@ export function LibraryPage() {
                     paper={paper}
                     checked={selected.has(paper.id)}
                     onCheck={(checked) => toggleOne(paper.id, checked)}
-                    onOpen={setOpenPaperId}
+                    onOpen={openPaper}
                     onAction={runRowAction}
                     onRate={ratePaper}
+                    onStatusChange={changePaperStatus}
+                    onOpenPdf={(paperId) => openPaper(paperId, "pdf")}
                     actionPending={rowAction.isPending}
                     open={openPaperId === paper.id}
                   />
@@ -1437,14 +1772,19 @@ export function LibraryPage() {
             type="button"
             className="library-detail-backdrop"
             aria-label="論文詳細を閉じる"
+            tabIndex={-1}
             onClick={() => setOpenPaperId(null)}
           />
           <aside
+            ref={drawerRef}
             className={
               drawerResizing ? "library-detail-drawer is-resizing" : "library-detail-drawer"
             }
             style={{ width: drawerWidth }}
             aria-label="論文詳細"
+            role="dialog"
+            aria-modal="true"
+            tabIndex={-1}
           >
             <div
               className="drawer-resize-handle"
@@ -1469,7 +1809,13 @@ export function LibraryPage() {
                 }
               }}
             />
-            <PaperDetailView paperId={openPaperId} drawer onClose={() => setOpenPaperId(null)} />
+            <PaperDetailView
+              key={`${openPaperId}-${openPaperTab}`}
+              paperId={openPaperId}
+              drawer
+              initialTab={openPaperTab}
+              onClose={() => setOpenPaperId(null)}
+            />
           </aside>
         </>
       )}
@@ -1511,7 +1857,7 @@ export function LibraryPage() {
               DOIがない場合は手入力
             </button>
           ) : (
-            <section className="manual-entry-block" aria-label="論文情報を手入力">
+            <section className="manual-entry-block" aria-label="書誌情報を手入力">
               <header>
                 <div>
                   <strong>書誌情報を手入力</strong>

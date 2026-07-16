@@ -99,11 +99,15 @@ function toExportPaper(row: SqlRow): ExportPaper {
 
 export const exportsRoutes = new Hono<AppBindings>();
 
-async function createExport(c: Context<AppBindings>, forcedFormat?: z.infer<typeof createExportSchema>["format"]): Promise<Response> {
+async function createExport(
+  c: Context<AppBindings>,
+  forcedFormat?: z.infer<typeof createExportSchema>["format"],
+): Promise<Response> {
   const rawInput: unknown = await c.req.json();
-  const body = rawInput && typeof rawInput === "object" && !Array.isArray(rawInput)
-    ? (rawInput as Record<string, unknown>)
-    : {};
+  const body =
+    rawInput && typeof rawInput === "object" && !Array.isArray(rawInput)
+      ? (rawInput as Record<string, unknown>)
+      : {};
   const input = createExportSchema.parse(forcedFormat ? { ...body, format: forcedFormat } : body);
   if (!input.all && (!input.paperIds || input.paperIds.length === 0)) {
     throw new ApiError(422, "EXPORT_SELECTION_REQUIRED", "Select paperIds or set all to true.");
@@ -292,8 +296,8 @@ usageRoutes.get("/", async (c) => {
       (SELECT COUNT(*) FROM notes WHERE user_id=? AND deleted_at IS NULL) AS notes,
       (SELECT COUNT(*) FROM tags WHERE user_id=?) AS tags,
       (SELECT COUNT(*) FROM collections WHERE user_id=? AND deleted_at IS NULL) AS collections,
-      (SELECT COUNT(*) FROM files WHERE user_id=? AND deleted_at IS NULL AND upload_state='verified') AS files,
-      (SELECT COALESCE(SUM(size_bytes),0) FROM files WHERE user_id=? AND deleted_at IS NULL AND upload_state='verified') AS bytes`,
+      (SELECT COUNT(*) FROM files WHERE user_id=? AND upload_state='verified') AS files,
+      (SELECT COALESCE(SUM(size_bytes),0) FROM files WHERE user_id=? AND upload_state='verified') AS bytes`,
     userId,
     userId,
     userId,

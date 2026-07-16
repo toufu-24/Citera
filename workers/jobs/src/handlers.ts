@@ -15,22 +15,19 @@ function bufferToHex(value: ArrayBufferLike): string {
 }
 
 const SHA256_K = new Uint32Array([
-  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
-  0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
-  0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
-  0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-  0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
-  0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
-  0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
-  0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
-  0xc67178f2,
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ]);
 
 class StreamingSha256 {
   private readonly state = new Uint32Array([
-    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
-    0x5be0cd19,
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
   ]);
 
   private readonly buffer = new Uint8Array(64);
@@ -117,11 +114,8 @@ class StreamingSha256 {
         ((value15 >>> 18) | (value15 << 14)) ^
         (value15 >>> 3);
       const smallSigma1 =
-        ((value2 >>> 17) | (value2 << 15)) ^
-        ((value2 >>> 19) | (value2 << 13)) ^
-        (value2 >>> 10);
-      words[index] =
-        (words[index - 16]! + smallSigma0 + words[index - 7]! + smallSigma1) >>> 0;
+        ((value2 >>> 17) | (value2 << 15)) ^ ((value2 >>> 19) | (value2 << 13)) ^ (value2 >>> 10);
+      words[index] = (words[index - 16]! + smallSigma0 + words[index - 7]! + smallSigma1) >>> 0;
     }
 
     let a = this.state[0]!;
@@ -133,10 +127,12 @@ class StreamingSha256 {
     let g = this.state[6]!;
     let h = this.state[7]!;
     for (let index = 0; index < 64; index += 1) {
-      const bigSigma1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
+      const bigSigma1 =
+        ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
       const choose = (e & f) ^ (~e & g);
       const temporary1 = (h + bigSigma1 + choose + SHA256_K[index]! + words[index]!) >>> 0;
-      const bigSigma0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
+      const bigSigma0 =
+        ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
       const majority = (a & b) ^ (a & c) ^ (b & c);
       const temporary2 = (bigSigma0 + majority) >>> 0;
       h = g;
@@ -185,9 +181,7 @@ async function checksumForStoredObject(
   // R2 only exposes SHA-256 metadata when the uploader supplied it. Automatic imports
   // stream directly to R2, so hash the stored object when that metadata is unavailable.
   const object = await env.FILES.get(key);
-  return object?.body
-    ? sha256ForStream(object.body as ReadableStream<Uint8Array>)
-    : null;
+  return object?.body ? sha256ForStream(object.body as ReadableStream<Uint8Array>) : null;
 }
 
 function maxPdfBytes(env: Env): number {
@@ -360,7 +354,7 @@ async function downloadPdf(env: Env, job: JobMessage): Promise<JobResult> {
   const storage = await first<Row>(
     env.DB,
     `SELECT COALESCE(SUM(size_bytes),0) AS bytes FROM files
-     WHERE user_id=? AND deleted_at IS NULL AND upload_state IN ('pending','uploaded','verified')`,
+     WHERE user_id=? AND upload_state IN ('pending','uploaded','verified')`,
     job.userId,
   );
   if (Number(storage?.bytes ?? 0) + head.size > storageLimit) {
@@ -526,6 +520,11 @@ async function cleanupObject(env: Env, job: JobMessage): Promise<JobResult> {
   if (!keyBelongsToUser(key, job.userId))
     throw new JobError("OBJECT_SCOPE_INVALID", "Object key is outside the user's prefix", false);
   await env.FILES.delete(key);
+  await env.DB.prepare(
+    "UPDATE files SET upload_state='failed' WHERE id=? AND user_id=? AND deleted_at IS NOT NULL",
+  )
+    .bind(job.fileId, job.userId)
+    .run();
   return { deleted: true, key };
 }
 
