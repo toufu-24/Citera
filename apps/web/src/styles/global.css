@@ -5324,9 +5324,25 @@ body {
   display: flex;
   align-items: center;
   gap: 5px;
-  margin: -2px 0 12px;
   overflow-x: auto;
   scrollbar-width: none;
+}
+
+.status-filter-fieldset {
+  flex: 1 1 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.status-filter-fieldset legend {
+  margin-bottom: 6px;
+  color: #687168;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .status-quick-filter::-webkit-scrollbar {
@@ -5760,8 +5776,7 @@ body {
   }
 
   .status-quick-filter {
-    margin-inline: -18px;
-    padding-inline: 18px;
+    padding-bottom: 2px;
   }
 
   .library-table-card {

@@ -43,6 +43,8 @@ import { parseCitationFile, resolveImportedTagIds } from "../lib/import";
 import { PaperDetailView } from "./PaperDetailPage";
 
 type StatusFilter = "all" | PaperListItem["status"] | "deleted";
+type SortOption =
+  "updated_at:desc" | "created_at:desc" | "publication_date:desc" | "title:asc" | "rating:desc";
 type PaperRowAction =
   "open" | "copy-bibtex" | "toggle-archive" | "trash" | "restore" | "rate" | "change-status";
 
@@ -63,6 +65,16 @@ const exportFormatLabel = {
 
 const MIN_DRAWER_WIDTH = 420;
 const MAX_DRAWER_WIDTH = 960;
+const DEFAULT_SORT: SortOption = "created_at:desc";
+const SORT_STORAGE_KEY = "citera.library.sort";
+
+const sortOptions: Array<{ value: SortOption; label: string }> = [
+  { value: "created_at:desc", label: "追加が新しい順" },
+  { value: "updated_at:desc", label: "更新が新しい順" },
+  { value: "publication_date:desc", label: "出版年が新しい順" },
+  { value: "title:asc", label: "タイトル順" },
+  { value: "rating:desc", label: "評価が高い順" },
+];
 
 const quickStatusOptions: Array<{ value: StatusFilter; label: string }> = [
   { value: "all", label: "すべて" },
@@ -72,6 +84,24 @@ const quickStatusOptions: Array<{ value: StatusFilter; label: string }> = [
   { value: "archived", label: "アーカイブ" },
   { value: "deleted", label: "ゴミ箱" },
 ];
+
+function loadSavedSort(): SortOption {
+  try {
+    const stored = window.localStorage.getItem(SORT_STORAGE_KEY);
+    if (sortOptions.some((option) => option.value === stored)) return stored as SortOption;
+  } catch {
+    // Storage can be unavailable in privacy-restricted browsing contexts.
+  }
+  return DEFAULT_SORT;
+}
+
+function saveSort(value: SortOption) {
+  try {
+    window.localStorage.setItem(SORT_STORAGE_KEY, value);
+  } catch {
+    // Keep the in-memory preference when persistent storage is unavailable.
+  }
+}
 
 function clampDrawerWidth(value: number) {
   const viewportMax = Math.max(MIN_DRAWER_WIDTH, window.innerWidth - 320);
@@ -124,7 +154,7 @@ function offlinePaperPage(all: PaperListItem[], search: URLSearchParams) {
       ...paper.tags.map((tag) => tag.name),
     ].some((value) => value?.toLocaleLowerCase("ja-JP").includes(query));
   });
-  const [field, direction] = (search.get("sort") ?? "updated_at:desc").split(":");
+  const [field, direction] = (search.get("sort") ?? DEFAULT_SORT).split(":");
   const multiplier = direction === "asc" ? 1 : -1;
   filtered.sort((left, right) => {
     const leftValue =
@@ -402,7 +432,7 @@ export function LibraryPage() {
   const [recentOnly, setRecentOnly] = useState(false);
   const [yearFrom, setYearFrom] = useState("");
   const [yearTo, setYearTo] = useState("");
-  const [sort, setSort] = useState("updated_at:desc");
+  const [sort, setSort] = useState<SortOption>(loadSavedSort);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkTagId, setBulkTagId] = useState("");
@@ -1394,48 +1424,40 @@ export function LibraryPage() {
           <ArrowDownUp size={17} />
           <select
             value={sort}
-            onChange={(event) => setSort(event.target.value)}
+            onChange={(event) => {
+              const nextSort = event.target.value as SortOption;
+              setSort(nextSort);
+              saveSort(nextSort);
+            }}
             aria-label="並び替え"
           >
-            <option value="updated_at:desc">更新が新しい順</option>
-            <option value="created_at:desc">追加が新しい順</option>
-            <option value="publication_date:desc">出版年が新しい順</option>
-            <option value="title:asc">タイトル順</option>
-            <option value="rating:desc">評価が高い順</option>
+            {sortOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
           </select>
         </label>
       </section>
 
-      <div className="status-quick-filter" role="group" aria-label="読書状態で絞り込む">
-        {quickStatusOptions.map((option) => (
-          <button
-            type="button"
-            key={option.value}
-            className={status === option.value ? "active" : ""}
-            aria-pressed={status === option.value}
-            onClick={() => setStatus(option.value)}
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
-
       {filtersOpen && (
         <section className="filter-panel" id="library-filter-panel">
-          <label>
-            状態
-            <select
-              value={status}
-              onChange={(event) => setStatus(event.target.value as StatusFilter)}
-            >
-              <option value="all">すべて</option>
-              <option value="inbox">未着手</option>
-              <option value="reading">読書中</option>
-              <option value="read">読了</option>
-              <option value="archived">アーカイブ</option>
-              <option value="deleted">ゴミ箱</option>
-            </select>
-          </label>
+          <fieldset className="status-filter-fieldset">
+            <legend>状態</legend>
+            <div className="status-quick-filter" role="group" aria-label="読書状態で絞り込む">
+              {quickStatusOptions.map((option) => (
+                <button
+                  type="button"
+                  key={option.value}
+                  className={status === option.value ? "active" : ""}
+                  aria-pressed={status === option.value}
+                  onClick={() => setStatus(option.value)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </fieldset>
           <label>
             PDF
             <select
