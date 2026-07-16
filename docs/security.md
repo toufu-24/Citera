@@ -77,7 +77,7 @@ Cross-Origin-Resource-Policy: same-site
 Cache-Control: no-store
 ```
 
-Static PWA assets are served by the assets binding without passing through API middleware. `apps/web/public/_headers` supplies a PDF.js-compatible CSP, framing/object/base restrictions, HSTS, nosniff, Referrer/Permissions policies and cache rules; production sourcemaps are disabled. Verify these headers on the actual custom-domain response because repository configuration alone does not prove edge application.
+Static PWA assets are served by the assets binding without passing through API middleware. `apps/web/public/_headers` supplies a PDF.js-compatible CSP, including the configured Cloudflare Access team domain for session/login requests, framing/object/base restrictions, HSTS, nosniff, Referrer/Permissions policies and cache rules; production sourcemaps are disabled. Verify these headers on the actual custom-domain response because repository configuration alone does not prove edge application.
 
 Both production Wrangler environments disable `workers_dev`; the API custom domain is therefore the intended public entry point, while the Jobs Worker has no `*.workers.dev` endpoint. Provision the API route before deployment and verify that no unintended preview/staging hostname reaches production bindings.
 
