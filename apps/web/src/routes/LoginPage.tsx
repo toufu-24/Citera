@@ -66,7 +66,7 @@ export function LoginPage() {
           <h2>あなたのライブラリへ</h2>
           <p>信頼できるアカウントでログインしてください。</p>
           <div className="login-actions">
-            <a className="button oauth-button google" href="/cdn-cgi/access/login">
+            <a className="button oauth-button google" href={returnUrl}>
               Cloudflare Accessでログイン
             </a>
             {import.meta.env.DEV && import.meta.env.VITE_ENABLE_DEV_LOGIN !== "false" && (
